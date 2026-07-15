@@ -1,18 +1,53 @@
 use std::convert::Infallible;
+use std::sync::{Arc, Mutex};
 
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
-use futures::stream::StreamExt;
 use futures::stream::Stream;
+use futures::stream::StreamExt;
 use reqwest::Client;
 use tracing::{error, info};
 
-use crate::profiles::loader::load_profiles;
+use crate::meter::db::{LedgerDb, NewLedgerRecord};
+use crate::meter::pricing::PricingMap;
+use crate::meter::recorder::{current_project_path, estimate_tokens, record_request, RequestTimer};
+use crate::profiles::loader::{config_dir, load_profiles};
+
+/// Parse the "model" field from an Anthropic Messages API JSON body.
+fn extract_model(body: &str) -> String {
+    let mut in_key = false;
+    let mut key_buf = String::new();
+
+    for ch in body.chars() {
+        if ch == '"' {
+            if in_key {
+                if key_buf == "model" {
+                    let after_key = body.split(&format!("\"{}\"", key_buf)).nth(1).unwrap_or("");
+                    let after_colon = after_key.trim_start().strip_prefix(':').unwrap_or(after_key);
+                    let value_start = after_colon.trim_start();
+                    if let Some(rest) = value_start.strip_prefix('"') {
+                        let end = rest.find('"').unwrap_or(rest.len());
+                        return rest[..end].to_string();
+                    }
+                }
+                key_buf.clear();
+                in_key = false;
+            } else {
+                in_key = true;
+            }
+        } else if in_key {
+            key_buf.push(ch);
+        }
+    }
+    "unknown".to_string()
+}
 
 pub async fn messages(
     headers: HeaderMap,
     body: String,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    let timer = RequestTimer::start();
+
     let profiles = load_profiles().map_err(|e| {
         error!("Failed to load profiles: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -23,6 +58,9 @@ pub async fn messages(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    let model = extract_model(&body);
+    let profile_name = profile.name.clone();
+    let input_tokens = estimate_tokens(&body);
     let upstream_url = format!("{}/v1/messages", profile.upstream_url.trim_end_matches('/'));
 
     let client = Client::builder()
@@ -60,21 +98,106 @@ pub async fn messages(
             StatusCode::BAD_GATEWAY
         })?;
 
-    let status = response.status();
-    if !status.is_success() {
-        error!("Upstream returned {status}");
-        return Err(StatusCode::BAD_GATEWAY);
-    }
+    let http_status = response.status();
+    let status_str = if http_status.is_success() {
+        "success"
+    } else {
+        error!("Upstream returned {http_status}");
+        "error"
+    };
+    let latency_ms = timer.elapsed_ms();
 
-    let stream = response.bytes_stream().map(|result| match result {
-        Ok(ref bytes) => {
-            Ok(Event::default().data(String::from_utf8_lossy(bytes).to_string()))
+    // Collect stream bytes for token estimation, then pass through
+    let collected_bytes = Arc::new(Mutex::new(Vec::new()));
+    let collected_for_stream = collected_bytes.clone();
+
+    let stream = response.bytes_stream().map({
+        move |result| match result {
+            Ok(ref bytes) => {
+                if let Ok(mut buf) = collected_for_stream.lock() {
+                    buf.extend_from_slice(bytes);
+                }
+                Ok(Event::default().data(String::from_utf8_lossy(bytes).to_string()))
+            }
+            Err(e) => {
+                error!("Stream error: {e}");
+                Ok(Event::default().data(format!("Stream error: {e}")))
+            }
         }
-        Err(e) => {
-            error!("Stream error: {e}");
-            Ok(Event::default().data(format!("Stream error: {e}")))
+    });
+
+    // Record to ledger (fire-and-forget — ledger failure must not affect streaming)
+    let model_clone = model;
+    let profile_clone = profile_name;
+    let status_clone = status_str.to_string();
+    let collected_clone = collected_bytes.clone();
+    let project_path = current_project_path();
+    tokio::spawn(async move {
+        let db_path = config_dir().join("ledger.db");
+        let db = match LedgerDb::open(&db_path) {
+            Ok(db) => db,
+            Err(e) => {
+                error!("Failed to open ledger DB: {e}");
+                return;
+            }
+        };
+        let pricing = PricingMap::load_embedded();
+        // Brief delay so the stream has started accumulating bytes
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let locked = collected_clone.lock().unwrap_or_else(|e| e.into_inner());
+        let output_text = String::from_utf8_lossy(&locked).to_string();
+        let output_tokens = estimate_tokens(&output_text);
+        let record = NewLedgerRecord {
+            timestamp: chrono::Utc::now(),
+            model: model_clone,
+            profile_name: profile_clone,
+            input_tokens,
+            output_tokens,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            latency_ms,
+            status: status_clone,
+            cost: None,
+            project_path,
+        };
+        if let Err(e) = record_request(&db, &pricing, record) {
+            error!("Failed to record to ledger: {e}");
         }
     });
 
     Ok(Sse::new(stream))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_model_present() {
+        let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[]}"#;
+        assert_eq!(extract_model(body), "claude-sonnet-5");
+    }
+
+    #[test]
+    fn test_extract_model_with_slash() {
+        let body = r#"{"model":"cx/gpt-5.6-sol","messages":[]}"#;
+        assert_eq!(extract_model(body), "cx/gpt-5.6-sol");
+    }
+
+    #[test]
+    fn test_extract_model_missing() {
+        let body = r#"{"max_tokens":1024}"#;
+        assert_eq!(extract_model(body), "unknown");
+    }
+
+    #[test]
+    fn test_extract_model_empty_body() {
+        assert_eq!(extract_model(""), "unknown");
+    }
+
+    #[test]
+    fn test_extract_model_date_suffix_preserved() {
+        let body = r#"{"model":"claude-sonnet-5-20251001","messages":[]}"#;
+        assert_eq!(extract_model(body), "claude-sonnet-5-20251001");
+    }
 }
