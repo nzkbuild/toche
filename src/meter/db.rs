@@ -15,6 +15,7 @@ pub struct NewLedgerRecord {
     pub output_tokens: u64,
     pub cache_read_input_tokens: u64,
     pub cache_creation_input_tokens: u64,
+    pub coalesced_count: u64,
     pub latency_ms: u64,
     pub status: String,
     pub cost: Option<f64>,
@@ -45,6 +46,7 @@ impl LedgerDb {
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                coalesced_count INTEGER NOT NULL DEFAULT 0,
                 latency_ms INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'success',
                 cost REAL,
@@ -60,14 +62,31 @@ impl LedgerDb {
             "CREATE INDEX IF NOT EXISTS idx_ledger_project ON ledger(project_path, timestamp)",
             [],
         )?;
+
+        // Migration: add coalesced_count to existing databases
+        let has_column: bool = {
+            let mut stmt =
+                conn.prepare("PRAGMA table_info(ledger)")?;
+            let columns: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            columns.iter().any(|c| c == "coalesced_count")
+        };
+        if !has_column {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN coalesced_count INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+
         Ok(Self { conn })
     }
 
     pub fn record(&self, entry: &NewLedgerRecord) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO ledger (timestamp, model, profile_name, input_tokens, output_tokens,
-             cache_read_input_tokens, cache_creation_input_tokens, latency_ms, status, cost, project_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             cache_read_input_tokens, cache_creation_input_tokens, coalesced_count, latency_ms, status, cost, project_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             rusqlite::params![
                 entry.timestamp.to_rfc3339(),
                 entry.model,
@@ -76,6 +95,7 @@ impl LedgerDb {
                 entry.output_tokens as i64,
                 entry.cache_read_input_tokens as i64,
                 entry.cache_creation_input_tokens as i64,
+                entry.coalesced_count as i64,
                 entry.latency_ms as i64,
                 entry.status,
                 entry.cost,
@@ -114,6 +134,7 @@ impl LedgerDb {
         if model_filter.is_empty() {
             let sql = "SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
                     COALESCE(SUM(cache_read_input_tokens), 0), COALESCE(SUM(cache_creation_input_tokens), 0),
+                    COALESCE(SUM(coalesced_count), 0),
                     COALESCE(AVG(latency_ms), 0),
                     COALESCE(SUM(CASE WHEN cost IS NOT NULL THEN cost ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0)
@@ -130,9 +151,10 @@ impl LedgerDb {
                         output_tokens: row.get::<_, i64>(2)? as u64,
                         cache_read_input_tokens: row.get::<_, i64>(3)? as u64,
                         cache_creation_input_tokens: row.get::<_, i64>(4)? as u64,
-                        avg_latency_ms: row.get::<_, f64>(5)?,
-                        total_cost_known: row.get::<_, f64>(6)?,
-                        total_cost_unknown_requests: row.get::<_, i64>(7)? as u64,
+                        coalesced_count: row.get::<_, i64>(5)? as u64,
+                        avg_latency_ms: row.get::<_, f64>(6)?,
+                        total_cost_known: row.get::<_, f64>(7)?,
+                        total_cost_unknown_requests: row.get::<_, i64>(8)? as u64,
                     })
                 },
             )?;
@@ -140,6 +162,7 @@ impl LedgerDb {
         } else {
             let sql = "SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
                     COALESCE(SUM(cache_read_input_tokens), 0), COALESCE(SUM(cache_creation_input_tokens), 0),
+                    COALESCE(SUM(coalesced_count), 0),
                     COALESCE(AVG(latency_ms), 0),
                     COALESCE(SUM(CASE WHEN cost IS NOT NULL THEN cost ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0)
@@ -156,9 +179,10 @@ impl LedgerDb {
                         output_tokens: row.get::<_, i64>(2)? as u64,
                         cache_read_input_tokens: row.get::<_, i64>(3)? as u64,
                         cache_creation_input_tokens: row.get::<_, i64>(4)? as u64,
-                        avg_latency_ms: row.get::<_, f64>(5)?,
-                        total_cost_known: row.get::<_, f64>(6)?,
-                        total_cost_unknown_requests: row.get::<_, i64>(7)? as u64,
+                        coalesced_count: row.get::<_, i64>(5)? as u64,
+                        avg_latency_ms: row.get::<_, f64>(6)?,
+                        total_cost_known: row.get::<_, f64>(7)?,
+                        total_cost_unknown_requests: row.get::<_, i64>(8)? as u64,
                     })
                 },
             )?;
@@ -198,6 +222,7 @@ impl LedgerDb {
                         COALESCE(SUM(output_tokens), 0),
                         COALESCE(SUM(cache_read_input_tokens), 0),
                         COALESCE(SUM(cache_creation_input_tokens), 0),
+                        COALESCE(SUM(coalesced_count), 0),
                         COALESCE(AVG(latency_ms), 0),
                         COALESCE(SUM(CASE WHEN cost IS NOT NULL THEN cost ELSE 0 END), 0),
                         COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0)
@@ -207,25 +232,20 @@ impl LedgerDb {
             )?;
             let rows = stmt.query_map(rusqlite::params![exact, glob], |row| {
                 let input = row.get::<_, i64>(2)? as u64;
-                let _saved = row.get::<_, i64>(3)? as u64;
+                let output = row.get::<_, i64>(3)? as u64;
                 let commands = row.get::<_, i64>(1)? as u64;
-                let total_time = row.get::<_, i64>(5)? as u64;
-                let avg_latency_ms = if commands > 0 {
-                    total_time as f64 / commands as f64
-                } else {
-                    0.0
-                };
                 Ok(DayBreakdown {
                     date: row.get(0)?,
                     breakdown: UsageBreakdown {
                         total_requests: commands,
                         input_tokens: input,
-                        output_tokens: row.get::<_, i64>(3)? as u64,
+                        output_tokens: output,
                         cache_read_input_tokens: row.get::<_, i64>(4)? as u64,
                         cache_creation_input_tokens: row.get::<_, i64>(5)? as u64,
-                        avg_latency_ms,
-                        total_cost_known: row.get::<_, f64>(7)?,
-                        total_cost_unknown_requests: row.get::<_, i64>(8)? as u64,
+                        coalesced_count: row.get::<_, i64>(6)? as u64,
+                        avg_latency_ms: row.get::<_, f64>(7)?,
+                        total_cost_known: row.get::<_, f64>(8)?,
+                        total_cost_unknown_requests: row.get::<_, i64>(9)? as u64,
                     },
                 })
             })?;
@@ -243,7 +263,7 @@ impl LedgerDb {
         let (exact, glob) = Self::project_filter(project_path);
         let mut stmt = self.conn.prepare(
             "SELECT id, timestamp, model, profile_name, input_tokens, output_tokens,
-                    cache_read_input_tokens, cache_creation_input_tokens, latency_ms, status, cost, project_path
+                    cache_read_input_tokens, cache_creation_input_tokens, coalesced_count, latency_ms, status, cost, project_path
              FROM ledger
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
              ORDER BY timestamp DESC LIMIT ?3",
@@ -264,10 +284,11 @@ impl LedgerDb {
                     output_tokens: row.get::<_, i64>(5)? as u64,
                     cache_read_input_tokens: row.get::<_, i64>(6)? as u64,
                     cache_creation_input_tokens: row.get::<_, i64>(7)? as u64,
-                    latency_ms: row.get::<_, i64>(8)? as u64,
-                    status: row.get(9)?,
-                    cost: row.get(10)?,
-                    project_path: row.get(11)?,
+                    coalesced_count: row.get::<_, i64>(8)? as u64,
+                    latency_ms: row.get::<_, i64>(9)? as u64,
+                    status: row.get(10)?,
+                    cost: row.get(11)?,
+                    project_path: row.get(12)?,
                 })
             },
         )?;
@@ -295,6 +316,7 @@ mod tests {
             output_tokens: 200,
             cache_read_input_tokens: 500,
             cache_creation_input_tokens: 0,
+            coalesced_count: 0,
             latency_ms: 350,
             status: "success".into(),
             cost: Some(0.0042),
@@ -321,6 +343,7 @@ mod tests {
             output_tokens: 200,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
+            coalesced_count: 0,
             latency_ms: 300,
             status: "success".into(),
             cost: Some(0.003),
@@ -335,6 +358,7 @@ mod tests {
             output_tokens: 100,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
+            coalesced_count: 0,
             latency_ms: 200,
             status: "error".into(),
             cost: None,
@@ -362,6 +386,7 @@ mod tests {
             output_tokens: 50,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
+            coalesced_count: 0,
             latency_ms: 100,
             status: "success".into(),
             cost: None,

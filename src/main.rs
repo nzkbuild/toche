@@ -6,6 +6,7 @@ mod config;
 mod gateway;
 mod meter;
 mod profiles;
+mod shield;
 
 #[derive(Parser)]
 #[command(name = "toche", about = "Local context-efficiency gateway for Claude Code")]

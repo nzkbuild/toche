@@ -31,6 +31,7 @@ pub async fn run(json: bool, entries: u32) -> anyhow::Result<()> {
         println!();
         let t = &output.summary.total;
         println!("Total requests:      {}", t.total_requests);
+        println!("Coalesced requests:  {}", t.coalesced_count);
         println!("Input tokens:        {}", t.input_tokens);
         println!("Output tokens:       {}", t.output_tokens);
         println!("Cache read tokens:   {}", t.cache_read_input_tokens);

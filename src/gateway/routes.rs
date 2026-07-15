@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use futures::stream::Stream;
-use futures::stream::StreamExt;
 use reqwest::Client;
 use tracing::{error, info};
 
@@ -14,6 +13,7 @@ use crate::meter::pricing::PricingMap;
 use crate::meter::recorder::{current_project_path, estimate_tokens, record_request, RequestTimer};
 use crate::profiles::loader::{config_dir, load_profiles};
 use crate::profiles::types::CacheMode;
+use crate::shield;
 
 /// Parse the "model" field from an Anthropic Messages API JSON body.
 fn extract_model(body: &str) -> String {
@@ -42,6 +42,76 @@ fn extract_model(body: &str) -> String {
         }
     }
     "unknown".to_string()
+}
+
+/// Result of forwarding a request to the upstream API.
+struct ForwardedResponse {
+    status: u16,
+    body_bytes: Vec<u8>,
+    cache_read_tokens: u64,
+    cache_create_tokens: u64,
+    coalesced_count: u64,
+}
+
+/// Forward a request to the upstream and collect the full response body.
+async fn forward_to_upstream(
+    client: &Client,
+    upstream_url: &str,
+    upstream_headers: HeaderMap,
+    body: String,
+) -> Result<ForwardedResponse, StatusCode> {
+    let response = client
+        .post(upstream_url)
+        .headers(upstream_headers)
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| {
+            error!("Upstream request failed: {e}");
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    let status = response.status().as_u16();
+    let cache_read: u64 = response
+        .headers()
+        .get("anthropic-cache-read-input-tokens")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let cache_create: u64 = response
+        .headers()
+        .get("anthropic-cache-creation-input-tokens")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    // Collect full response body
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let collected_for_stream = collected.clone();
+
+    let mut stream = response.bytes_stream();
+    while let Some(result) = futures::StreamExt::next(&mut stream).await {
+        match result {
+            Ok(bytes) => {
+                if let Ok(mut buf) = collected_for_stream.lock() {
+                    buf.extend_from_slice(&bytes);
+                }
+            }
+            Err(e) => {
+                error!("Stream error: {e}");
+            }
+        }
+    }
+
+    let body_bytes = collected.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+    Ok(ForwardedResponse {
+        status,
+        body_bytes,
+        cache_read_tokens: cache_read,
+        cache_create_tokens: cache_create,
+        coalesced_count: 0,
+    })
 }
 
 pub async fn messages(
@@ -89,7 +159,7 @@ pub async fn messages(
                             model
                         );
                     }
-                    body.clone() // forward original body unchanged
+                    body.clone()
                 }
                 CacheMode::Auto => {
                     let count = bp.message_blocks.len()
@@ -106,10 +176,10 @@ pub async fn messages(
                 }
             }
         } else {
-            body.clone() // cache disabled for this profile
+            body.clone()
         }
     } else {
-        body.clone() // no cache config: pass through unchanged
+        body.clone()
     };
 
     let upstream_url = format!("{}/v1/messages", profile.upstream_url.trim_end_matches('/'));
@@ -136,67 +206,71 @@ pub async fn messages(
         );
     }
 
-    info!("Forwarding to upstream: {upstream_url}");
+    // Request Shield: coalesce identical in-flight requests
+    let fingerprint = shield::fingerprint::compute(&modified_body);
 
-    let response = client
-        .post(&upstream_url)
-        .headers(upstream_headers)
-        .body(modified_body)
-        .send()
-        .await
-        .map_err(|e| {
-            error!("Upstream request failed: {e}");
-            StatusCode::BAD_GATEWAY
-        })?;
+    let shield_result = shield::coalesce::store()
+        .try_acquire(&upstream_url, &fingerprint)
+        .await;
 
-    let http_status = response.status();
-    let status_str = if http_status.is_success() {
+    let (forwarded, shield_key_for_complete) = match shield_result {
+        shield::coalesce::CoalesceResult::Coalesced { captured } => {
+            info!(
+                "Shield coalesced: fingerprint={}.., profile={}, model={}",
+                &fingerprint[..16.min(fingerprint.len())],
+                profile_name,
+                model
+            );
+            (
+                ForwardedResponse {
+                    status: captured.status,
+                    body_bytes: captured.body_bytes,
+                    cache_read_tokens: 0,
+                    cache_create_tokens: 0,
+                    coalesced_count: 1,
+                },
+                None,
+            )
+        }
+        shield::coalesce::CoalesceResult::Failed => {
+            error!("Shield: prior request failed, rejecting");
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+        shield::coalesce::CoalesceResult::Forward { key } => {
+            info!("Forwarding to upstream: {upstream_url}");
+            let fwd = forward_to_upstream(
+                &client,
+                &upstream_url,
+                upstream_headers,
+                modified_body,
+            )
+            .await?;
+            (fwd, Some(key))
+        }
+    };
+
+    let status_str = if forwarded.status >= 200 && forwarded.status < 300 {
         "success"
     } else {
-        error!("Upstream returned {http_status}");
         "error"
     };
     let latency_ms = timer.elapsed_ms();
 
-    // Parse cache usage from upstream response headers
-    let upstream_cache_read: u64 = response
-        .headers()
-        .get("anthropic-cache-read-input-tokens")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let upstream_cache_create: u64 = response
-        .headers()
-        .get("anthropic-cache-creation-input-tokens")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
-    // Collect stream bytes for token estimation, then pass through
-    let collected_bytes = Arc::new(Mutex::new(Vec::new()));
-    let collected_for_stream = collected_bytes.clone();
-
-    let stream = response.bytes_stream().map({
-        move |result| match result {
-            Ok(ref bytes) => {
-                if let Ok(mut buf) = collected_for_stream.lock() {
-                    buf.extend_from_slice(bytes);
-                }
-                Ok(Event::default().data(String::from_utf8_lossy(bytes).to_string()))
-            }
-            Err(e) => {
-                error!("Stream error: {e}");
-                Ok(Event::default().data(format!("Stream error: {e}")))
-            }
-        }
+    // Build SSE stream from collected bytes
+    let body_bytes = forwarded.body_bytes;
+    let stream = futures::stream::once({
+        let data = String::from_utf8_lossy(&body_bytes).to_string();
+        async move { Ok(Event::default().data(data)) }
     });
 
-    // Record to ledger (fire-and-forget — ledger failure must not affect streaming)
+    // Record to ledger (fire-and-forget)
     let model_clone = model;
     let profile_clone = profile_name;
     let status_clone = status_str.to_string();
-    let collected_clone = collected_bytes.clone();
     let project_path = current_project_path();
+    let cache_read = forwarded.cache_read_tokens;
+    let cache_create = forwarded.cache_create_tokens;
+    let coalesced_count = forwarded.coalesced_count;
     tokio::spawn(async move {
         let db_path = config_dir().join("ledger.db");
         let db = match LedgerDb::open(&db_path) {
@@ -207,19 +281,28 @@ pub async fn messages(
             }
         };
         let pricing = PricingMap::load_embedded();
-        // Brief delay so the stream has started accumulating bytes
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let locked = collected_clone.lock().unwrap_or_else(|e| e.into_inner());
-        let output_text = String::from_utf8_lossy(&locked).to_string();
-        let output_tokens = estimate_tokens(&output_text);
+        let output_tokens = estimate_tokens(&String::from_utf8_lossy(&body_bytes));
+
+        // Complete shield entry so any waiters get the result
+        if let Some(key) = shield_key_for_complete {
+            shield::coalesce::store().complete(
+                &key,
+                shield::coalesce::CapturedResponse {
+                    status: forwarded.status,
+                    body_bytes: body_bytes.clone(),
+                },
+            );
+        }
+
         let record = NewLedgerRecord {
             timestamp: chrono::Utc::now(),
             model: model_clone,
             profile_name: profile_clone,
             input_tokens,
             output_tokens,
-            cache_read_input_tokens: upstream_cache_read,
-            cache_creation_input_tokens: upstream_cache_create,
+            cache_read_input_tokens: cache_read,
+            cache_creation_input_tokens: cache_create,
+            coalesced_count,
             latency_ms,
             status: status_clone,
             cost: None,
