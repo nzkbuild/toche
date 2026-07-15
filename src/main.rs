@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 mod cli;
 mod config;
 mod gateway;
+mod meter;
 mod profiles;
 
 #[derive(Parser)]

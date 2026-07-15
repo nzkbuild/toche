@@ -17,4 +17,4 @@ reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-featu
 futures = "0.3"
 dirs = "6"
 rusqlite = { version = "0.34", features = ["bundled"] }
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
