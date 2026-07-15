@@ -1,0 +1,22 @@
+# Reuse reference repos — never commit upstream source
+vendor_reuse/
+
+# Rust build artifacts
+target/
+debug/
+release/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Environment / secrets
+.env
+*.pem
+*.key
