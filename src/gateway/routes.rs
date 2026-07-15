@@ -8,10 +8,12 @@ use futures::stream::StreamExt;
 use reqwest::Client;
 use tracing::{error, info};
 
+use crate::cache;
 use crate::meter::db::{LedgerDb, NewLedgerRecord};
 use crate::meter::pricing::PricingMap;
 use crate::meter::recorder::{current_project_path, estimate_tokens, record_request, RequestTimer};
 use crate::profiles::loader::{config_dir, load_profiles};
+use crate::profiles::types::CacheMode;
 
 /// Parse the "model" field from an Anthropic Messages API JSON body.
 fn extract_model(body: &str) -> String {
@@ -61,6 +63,55 @@ pub async fn messages(
     let model = extract_model(&body);
     let profile_name = profile.name.clone();
     let input_tokens = estimate_tokens(&body);
+
+    // Cache coordination: evaluate breakpoints before forwarding
+    let modified_body = if let Some(ref cache_cfg) = profile.cache {
+        if cache_cfg.enabled {
+            let plan_result =
+                cache::breakpoint::find_breakpoints(&body, &cache_cfg.breakpoint);
+            let bp = plan_result.unwrap_or_else(|e| {
+                error!("Breakpoint detection failed: {e}");
+                cache::breakpoint::BreakpointPlan {
+                    system_block_index: None,
+                    message_blocks: Vec::new(),
+                }
+            });
+            match cache_cfg.mode {
+                CacheMode::Observe => {
+                    if bp.has_breakpoints() {
+                        info!(
+                            "Cache observe: {} breakpoints found (system={}, messages={}), profile={}, model={}",
+                            bp.message_blocks.len()
+                                + if bp.system_block_index.is_some() { 1 } else { 0 },
+                            bp.system_block_index.is_some(),
+                            bp.message_blocks.len(),
+                            profile_name,
+                            model
+                        );
+                    }
+                    body.clone() // forward original body unchanged
+                }
+                CacheMode::Auto => {
+                    let count = bp.message_blocks.len()
+                        + if bp.system_block_index.is_some() { 1 } else { 0 };
+                    info!(
+                        "Cache auto: {} breakpoints injected, profile={}, model={}",
+                        count, profile_name, model
+                    );
+                    cache::inject::inject_cache_control(&body, &bp)
+                        .unwrap_or_else(|e| {
+                            error!("Cache injection failed: {e}, forwarding original");
+                            body.clone()
+                        })
+                }
+            }
+        } else {
+            body.clone() // cache disabled for this profile
+        }
+    } else {
+        body.clone() // no cache config: pass through unchanged
+    };
+
     let upstream_url = format!("{}/v1/messages", profile.upstream_url.trim_end_matches('/'));
 
     let client = Client::builder()
@@ -90,7 +141,7 @@ pub async fn messages(
     let response = client
         .post(&upstream_url)
         .headers(upstream_headers)
-        .body(body)
+        .body(modified_body)
         .send()
         .await
         .map_err(|e| {
@@ -106,6 +157,20 @@ pub async fn messages(
         "error"
     };
     let latency_ms = timer.elapsed_ms();
+
+    // Parse cache usage from upstream response headers
+    let upstream_cache_read: u64 = response
+        .headers()
+        .get("anthropic-cache-read-input-tokens")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let upstream_cache_create: u64 = response
+        .headers()
+        .get("anthropic-cache-creation-input-tokens")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
     // Collect stream bytes for token estimation, then pass through
     let collected_bytes = Arc::new(Mutex::new(Vec::new()));
@@ -153,8 +218,8 @@ pub async fn messages(
             profile_name: profile_clone,
             input_tokens,
             output_tokens,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: upstream_cache_read,
+            cache_creation_input_tokens: upstream_cache_create,
             latency_ms,
             status: status_clone,
             cost: None,

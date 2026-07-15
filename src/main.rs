@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 
+mod cache;
 mod cli;
 mod config;
 mod gateway;
