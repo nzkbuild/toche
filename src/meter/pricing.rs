@@ -10,6 +10,7 @@ pub struct Pricing {
 }
 
 impl Pricing {
+    #[allow(dead_code)]
     pub const fn empty() -> Self {
         Self {
             input: 0.0,
