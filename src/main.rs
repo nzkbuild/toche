@@ -25,6 +25,15 @@ enum Commands {
     Doctor,
     /// Show gateway status
     Status,
+    /// Show usage statistics and cost breakdown
+    Stats {
+        /// Output in machine-readable JSON format
+        #[arg(long)]
+        json: bool,
+        /// Show recent entries (last N, default 50)
+        #[arg(long, default_value = "50")]
+        entries: u32,
+    },
 }
 
 #[tokio::main]
@@ -44,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Disconnect { agent }) => cli::disconnect::run(agent.as_deref()).await,
         Some(Commands::Doctor) => cli::doctor::run().await,
         Some(Commands::Status) => cli::status::run().await,
+        Some(Commands::Stats { json, entries }) => cli::stats::run(json, entries).await,
         None => gateway::serve().await,
     }
 }
