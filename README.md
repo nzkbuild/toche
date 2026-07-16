@@ -1,124 +1,228 @@
 <p align="center">
-  <img src="assets/branding/toche-logo.png" alt="Toche" width="200">
+  <img src="assets/branding/toche-wordmark.png" alt="Toche" width="620">
 </p>
 
-# Toche
+<p align="center">
+  <strong>Spend less context on noise. Keep more of the work.</strong>
+</p>
 
-**Local context-efficiency gateway for Claude Code.**
+<p align="center">
+  A local efficiency gateway for Claude Code that helps avoid repeated API work,
+  trims noisy tool output, coordinates caching, and shows where the tokens went.
+</p>
 
-Toche sits between Claude Code and the Anthropic API, making every request cheaper
-without sacrificing quality. It fingerprints requests to prevent duplicate API calls,
-manages prompt caching automatically, reduces tool output before it consumes your
-context window, tunes model behaviour per profile, stores safe responses for cross-session
-replay — all on your machine, with zero external dependencies at runtime.
+| Version | Built with | Works with | Runs as | License |
+|:-------:|:----------:|:----------:|:-------:|:-------:|
+| **1.0.6** | **Rust** | **Claude Code** | **Local gateway** | **Apache-2.0** |
 
----
+<p align="center">
+  <a href="#why-toche">Why Toche</a> ·
+  <a href="#what-it-does">What it does</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#command-reference">Commands</a> ·
+  <a href="#safety-and-control">Safety</a> ·
+  <a href="#documentation">Docs</a>
+</p>
 
-## Highlights
+## Why Toche
 
-- **Deduplication** — SHA-256 canonical request fingerprinting + single-flight
-  coalescing means concurrent identical requests hit the API once and share the
-  response.
-- **Persistent safe cache** — Safe responses (text-only, no tool_use) are stored
-  in SQLite + content-addressed storage for cross-session replay. Workspace
-  fingerprinting prevents replay across different code states.
-- **Automatic prompt caching** — Breakpoint detection and `cache_control` injection
-  without manual config. Observe mode logs what *would* be cached before you
-  commit to it.
-- **Tool output reduction** — 63 built-in filters from RTK pattern-match command
-  output (Cargo, Git, npm/pnpm, pytest, ruff, go, docker, etc.) and strip noise
-  before it hits Claude's context window. Original content stored in CAS for
-  recovery via `toche expand <hash>`.
-- **Efficiency profiles** — `concise` (terse, no filler) or `careful` (explicit
-  assumptions, surgical changes) system-prompt injection per profile.
-- **Session continuity** — Checkpoint/goal system preserves working state across
-  Claude Code sessions.
-- **Usage ledger** — SQLite ledger with per-request token counts, resolved pricing,
-  cache-hit breakdown, coalescing stats, reduction savings, and 90-day retention.
-  `toche stats` gives human or JSON output.
+Claude Code can do excellent work while quietly accumulating duplicate requests,
+large command output, and context that stopped being useful several thousand tokens
+ago. Toche sits between Claude Code and your configured Anthropic API endpoint and
+handles that housekeeping locally.
+
+There is no hosted Toche service and no second dashboard asking you to create an
+account. You run the gateway, you choose the optimizations, and you can turn them
+off when you want the raw path.
+
+## What it does
+
+| | Outcome | How Toche helps |
+|---|---|---|
+| **Avoid repeated work** | Fewer duplicate upstream calls | Identical in-flight requests share one response. Eligible text-only responses can also be replayed from a workspace-aware persistent cache. |
+| **Keep context cleaner** | Less command noise in the conversation | Built-in filters trim known noise from Cargo, Git, test runners, linters, package managers, Docker, and other tools. Original output remains recoverable. |
+| **Use provider caching deliberately** | Less manual cache plumbing | Toche detects prompt-cache breakpoints, supports observe mode, and can inject `cache_control` automatically. |
+| **Understand usage** | A local record of what happened | The SQLite ledger records token counts, cache activity, coalescing, reduction savings, latency, and estimated cost. |
+| **Resume with less friction** | Useful state survives a fresh session | Checkpoints preserve goals, completed work, next steps, changed files, and verification notes. |
+| **Stay in control** | Optimizations are inspectable and reversible | Bypass headers, cache inspection, output recovery, `doctor`, and `disconnect` keep the machinery visible. |
+
+Toche also includes `concise` and `careful` efficiency profiles and an optional
+Graphify adapter for local project-graph queries.
 
 ## Quick start
 
-```bash
-# Build
+Toche currently builds from source. You need Rust 1.85 or newer and Claude Code.
+
+### Windows PowerShell
+
+```powershell
+git clone https://github.com/nzkbuild/toche.git
+cd toche
 cargo build --release
 
-# Import your existing Claude Code config
+# Import your existing Claude Code configuration
+.\target\release\toche.exe setup
+
+# Start the gateway and leave this terminal open
+.\target\release\toche.exe
+```
+
+Open a second PowerShell window in the repository:
+
+```powershell
+.\target\release\toche.exe connect
+.\target\release\toche.exe doctor
+```
+
+Use Claude Code normally. When you want to return to direct upstream routing:
+
+```powershell
+.\target\release\toche.exe disconnect
+```
+
+### Linux or macOS
+
+```bash
+git clone https://github.com/nzkbuild/toche.git
+cd toche
+cargo build --release
+
+# Import your existing Claude Code configuration
 ./target/release/toche setup
 
-# Point Claude Code at Toche (verify with doctor)
-./target/release/toche connect
-./target/release/toche doctor
-
-# Run the gateway
+# Start the gateway and leave this terminal open
 ./target/release/toche
 ```
 
-Then use Claude Code normally. Toche proxies requests transparently.
+Open a second terminal in the repository:
 
-## CLI Reference
+```bash
+./target/release/toche connect
+./target/release/toche doctor
+```
 
-| Command | What it does |
-|---------|--------------|
-| `toche` (no args) | Start the gateway on `127.0.0.1:8743` |
-| `toche setup` | Generate `profiles.toml` from Claude Code config |
-| `toche setup --force` | Regenerate, backing up existing `profiles.toml` |
-| `toche connect` | Route Claude Code through Toche |
-| `toche disconnect` | Restore Claude Code to direct upstream |
-| `toche doctor` | Show config status and integration health |
-| `toche status` | Show gateway status |
-| `toche stats` | Usage and cost breakdown (human-readable) |
-| `toche stats --json` | Machine-readable output |
-| `toche stats --entries 100` | Last N entries |
-| `toche expand <hash>` | Restore original tool output from reduction hash |
-| `toche cache inspect` | List persistent safe cache entries |
-| `toche cache clear` | Clear cache for current project |
-| `toche cache clear --all` | Clear all cache entries |
-| `toche cache why <fingerprint>` | Explain cache decision for a fingerprint |
-| `toche checkpoint save` | Save a session checkpoint |
-| `toche checkpoint list` | List saved checkpoints |
-| `toche checkpoint show` | Show latest checkpoint |
-| `toche checkpoint delete <id>` | Delete a checkpoint |
-| `toche graph query <question>` | Query the knowledge graph |
-| `toche graph status` | Show graph node/edge counts |
-| `toche graph extract` | Rebuild the knowledge graph |
+Use Claude Code normally. To restore direct upstream routing:
+
+```bash
+./target/release/toche disconnect
+```
 
 ## How it works
 
-Every Anthropic API request flows through a pipeline:
-
+```mermaid
+flowchart LR
+    A[Claude Code] --> B[Toche on 127.0.0.1:8743]
+    B --> C{Local pipeline}
+    C --> D[Shield and safe cache]
+    C --> E[Output reduction]
+    C --> F[Efficiency and prompt cache]
+    D --> G[Configured Anthropic API endpoint]
+    E --> G
+    F --> G
+    G --> B
+    B --> H[Local ledger and content store]
+    B --> A
 ```
-fingerprint → shield → safe_cache → reduce → efficiency → cache → forward → ledger
+
+At request level, the pipeline is:
+
+```text
+fingerprint -> shield -> safe cache -> reduce -> efficiency -> cache -> forward -> ledger
 ```
 
-| Stage | What it does |
-|-------|--------------|
-| **Fingerprint** | SHA-256 over the canonical request body (model, messages, tools, temperature — with cache_control and stream stripped). |
-| **Shield** | Single-flight coalescing by `{upstream_url}\|{fingerprint}`. First caller forwards; concurrent callers share the response. |
-| **Safe Cache** | Persistent cross-session cache keyed by `(project_path, fingerprint)`. Workspace fingerprint prevents replay across different code states. Unsafe responses (containing tool_use blocks) are rejected. |
-| **Reduce** | 63-filter RTK pipeline pattern-matches tool command names (including commands resolved from Bash `input.command`), strips noise, stores original in CAS. |
-| **Efficiency** | Appends `concise` or `careful` system prompt instruction block when configured. |
-| **Cache** | Injects `cache_control` breakpoints into system prompt and consecutive non-tool message runs (Standard) or system prompt only (SystemOnly). |
-| **Forward** | Proxies the (possibly transformed) request to the upstream API, parses cache-hit response headers. |
-| **Ledger** | Fire-and-forget SQLite recording: model, tokens, cache hits, coalescing, reduction savings, latency, cost estimate. |
+Toche fingerprints the canonical request, checks whether work can be safely shared
+or replayed, reduces known tool-output noise, applies the selected efficiency and
+prompt-cache policy, forwards the resulting request upstream, then records the
+outcome locally.
 
-## Bypass Headers
+For the module map, database schema, cache rules, and content-addressed storage
+layout, see [the architecture guide](docs/ARCHITECTURE.md).
 
-Set any header to `true` (case-insensitive) to skip that pipeline stage per-request.
-The umbrella header overrides all individual bypasses.
+## Safety and control
+
+- The gateway binds to `127.0.0.1:8743` by default.
+- Toche configuration, its ledger, cache metadata, checkpoints, and stored content live locally.
+- Requests that require upstream work still go to the Anthropic API endpoint configured in your profile.
+- Persistent replay is limited to eligible responses. Responses containing `tool_use` blocks are rejected.
+- `toche doctor` reports configuration and integration health.
+- Every optimization stage has an explicit bypass header.
+- `toche expand <hash>` restores original tool output after reduction.
+- Cache entries can be inspected, explained, and cleared.
+- `toche disconnect` restores direct Claude Code routing.
+
+These controls make Toche inspectable and reversible. They are not a promise that
+every request will be cheaper or that an optimization can never affect model behavior.
+
+## Command reference
+
+<details>
+<summary><strong>Gateway, setup, and diagnostics</strong></summary>
+
+| Command | What it does |
+|---|---|
+| `toche` | Start the gateway on `127.0.0.1:8743` |
+| `toche setup` | Generate `profiles.toml` from Claude Code configuration |
+| `toche setup --force` | Regenerate the profile and back up the existing file |
+| `toche connect` | Route Claude Code through Toche |
+| `toche disconnect` | Restore direct upstream routing |
+| `toche doctor` | Show configuration and integration health |
+| `toche status` | Show gateway status |
+
+</details>
+
+<details>
+<summary><strong>Usage, reduction, and persistent cache</strong></summary>
+
+| Command | What it does |
+|---|---|
+| `toche stats` | Show a human-readable usage and cost breakdown |
+| `toche stats --json` | Print machine-readable statistics |
+| `toche stats --entries 100` | Include the last 100 ledger entries |
+| `toche expand <hash>` | Restore original tool output from a reduction hash |
+| `toche cache inspect` | List persistent safe-cache entries |
+| `toche cache clear` | Clear entries for the current project |
+| `toche cache clear --all` | Clear all persistent cache entries |
+| `toche cache why <fingerprint>` | Explain the cache decision for a fingerprint |
+
+</details>
+
+<details>
+<summary><strong>Continuity and project graph</strong></summary>
+
+| Command | What it does |
+|---|---|
+| `toche checkpoint save` | Save a session checkpoint |
+| `toche checkpoint list` | List saved checkpoints |
+| `toche checkpoint show` | Show the latest checkpoint |
+| `toche checkpoint delete <id>` | Delete a checkpoint |
+| `toche graph query <question>` | Query the optional knowledge graph |
+| `toche graph status` | Show graph node and edge counts |
+| `toche graph extract` | Rebuild the knowledge graph |
+
+</details>
+
+### Per-request bypasses
+
+Set a header to `true`, case-insensitively, to skip a stage for one request.
+The umbrella bypass takes precedence over individual bypasses.
 
 | Header | Skips |
-|--------|-------|
-| `x-toche-bypass` | All stages (raw forward) |
+|---|---|
+| `x-toche-bypass` | The complete optimization pipeline |
 | `x-toche-bypass-shield` | Request coalescing |
-| `x-toche-bypass-safe-cache` | Persistent cache lookup and store |
-| `x-toche-bypass-reduce` | Tool output reduction |
-| `x-toche-bypass-efficiency` | Instruction injection |
-| `x-toche-bypass-cache` | Ephemeral prompt cache injection |
+| `x-toche-bypass-safe-cache` | Persistent cache lookup and storage |
+| `x-toche-bypass-reduce` | Tool-output reduction |
+| `x-toche-bypass-efficiency` | Efficiency instruction injection |
+| `x-toche-bypass-cache` | Provider prompt-cache injection |
 
 ## Configuration
 
-Toche profiles live in `~/.toche/profiles.toml`. Example:
+Profiles live in `~/.toche/profiles.toml`. Running `toche setup` generates a
+profile from your existing Claude Code configuration.
+
+<details>
+<summary><strong>Example profile</strong></summary>
 
 ```toml
 default = "default"
@@ -126,7 +230,7 @@ default = "default"
 [[profiles]]
 name = "default"
 upstream_url = "https://api.anthropic.com"
-auth_method = { type = "api_key", header_name = "x-api-key", key = "sk-ant-..." }
+auth_method = { type = "api_key", header_name = "x-api-key", key = "YOUR_ANTHROPIC_API_KEY" }
 
 [profiles.cache]
 enabled = true
@@ -148,47 +252,66 @@ max_entry_bytes = 1048576
 enabled = false
 ```
 
-`toche setup` generates this from your existing Claude Code configuration.
+</details>
+
+Set `TOCHE_CONFIG_DIR` to override the default `~/.toche/` directory.
 
 ## Troubleshooting
 
-**Gateway won't start:**
-- Check port 8743 is free: nothing else should be listening there
-- Verify `~/.toche/profiles.toml` exists and is valid TOML: `toche doctor`
-- Run with debug logging: `RUST_LOG=toche=debug toche`
+<details>
+<summary><strong>The gateway will not start</strong></summary>
 
-**Cannot connect:**
-- Ensure the gateway is running first (run `toche` in one terminal)
-- Run `toche connect` in another terminal after the gateway is listening
+- Check that nothing else is listening on port 8743.
+- Run `toche doctor` to verify that `profiles.toml` exists and is valid.
+- Enable debug logging with `RUST_LOG=toche=debug toche`.
 
-**Stats show nothing:**
-- The ledger records only requests that go through the gateway. Run `toche connect`
-  first, then use Claude Code normally.
+</details>
 
-**Cache entries not appearing:**
-- Safe cache only caches text-only responses (no tool_use blocks). Use `toche cache why <fingerprint>`
-  to see why a response was rejected.
+<details>
+<summary><strong>Claude Code cannot connect</strong></summary>
 
-**API errors after disconnect:**
-- Run `toche doctor` to check routing state. If `env.ANTHROPIC_BASE_URL` still points
-  to Toche but the gateway is stopped, manually edit `~/.claude/settings.json`.
+- Start the gateway before running `toche connect`.
+- Run `toche doctor` in a second terminal after connecting.
+
+</details>
+
+<details>
+<summary><strong>Stats or cache entries are empty</strong></summary>
+
+- The ledger records only requests routed through the gateway.
+- The persistent cache stores only eligible text-only responses without `tool_use` blocks.
+- Use `toche cache why <fingerprint>` to inspect a cache rejection.
+
+</details>
+
+<details>
+<summary><strong>Routing still points to Toche after disconnecting</strong></summary>
+
+Run `toche doctor`. If `env.ANTHROPIC_BASE_URL` still points to Toche while the
+gateway is stopped, inspect `~/.claude/settings.json` and its Toche backup.
+
+</details>
 
 ## Requirements
 
-- Rust 1.85+ (edition 2024)
-- SQLite (bundled via `rusqlite`)
-- Claude Code (or any Anthropic Messages API client)
-
-No external services. No API keys of its own. Everything runs locally.
+- Rust 1.85 or newer, edition 2024
+- Claude Code or another Anthropic Messages API client
+- No hosted Toche service
+- SQLite is bundled through `rusqlite`
 
 ## Documentation
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — Full pipeline, module map, database schema, CAS layout
-- [CHANGELOG.md](CHANGELOG.md) — Release history v0.1.0 through v1.0.5
-- [BUG_TRACKER.md](docs/BUG_TRACKER.md) — Bugs found and fixed during dogfooding
+- [Architecture](docs/ARCHITECTURE.md): pipeline, modules, databases, and storage
+- [Changelog](CHANGELOG.md): release history from 0.1.0 through 1.0.6
+- [Bug tracker](docs/BUG_TRACKER.md): issues found and fixed during dogfooding
+- [Third-party notices](THIRD_PARTY_NOTICES.md): reused ideas, integration decisions, and attribution
+
+## Built from good work
+
+Toche's Rust implementation was informed by ideas and patterns from ccusage, RTK,
+Graphify, andrej-karpathy-skills, and caveman-claude. Their licenses and attribution
+are preserved in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
-
-Third-party attribution in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Licensed under the [Apache License 2.0](LICENSE).

@@ -2,7 +2,29 @@
 
 All notable changes to Toche will be documented in this file.
 
-## [1.0.4] — 2026-07-17
+## [1.0.6] - 2026-07-17
+
+### Added
+- Criterion benchmarks for request fingerprinting, tool-output reduction, workspace fingerprinting, and safe-response inspection
+
+### Changed
+- Expanded the README with the complete CLI surface, bypass headers, troubleshooting, and current pipeline documentation
+- Bumped the package version to 1.0.6
+
+### Repository maintenance
+- Added the missing `v1.0.2` and `v1.0.3` tags at their original commits
+
+## [1.0.5] - 2026-07-17
+
+### Added
+- Integration coverage for `status`, `doctor`, and connect/disconnect edge cases
+- Regression coverage for routing detection through `env.ANTHROPIC_BASE_URL`
+
+### Changed
+- Added defense-in-depth ignore rules for local profile and backup files
+- Documented the synchronous mutex choice used by request coalescing
+
+## [1.0.4] - 2026-07-17
 
 ### Fixed
 - Version alignment: Cargo.toml bumped from 1.0.0 to 1.0.4 (was frozen across 3 releases)
@@ -14,12 +36,12 @@ All notable changes to Toche will be documented in this file.
 
 ### Added
 - CHANGELOG.md (this file)
-- docs/ARCHITECTURE.md — full pipeline and module documentation
+- docs/ARCHITECTURE.md: full pipeline and module documentation
 
 ### Changed
 - README updated with all CLI commands, bypass headers, and pipeline docs
 
-## [1.0.3] — 2026-07-16
+## [1.0.3] - 2026-07-16
 
 ### Fixed
 - `extract_model()` replaced hand-rolled JSON char parser with serde_json (F1)
@@ -33,19 +55,19 @@ All notable changes to Toche will be documented in this file.
 - Connect health-checks gateway before modifying settings
 - `toche disconnect` cleans `env.ANTHROPIC_BASE_URL` and empty env objects
 
-## [1.0.2] — 2026-07-16
+## [1.0.2] - 2026-07-16
 
 ### Fixed
 - `resolve_command()` now correctly accesses `input.input.command` on Bash tool_use blocks
 - Cargo test fixture includes compilation noise the filter actually strips
 - `.akar/` added to `.gitignore`
 
-## [1.0.1] — 2026-07-16
+## [1.0.1] - 2026-07-16
 
 ### Fixed
 - Second-round audit: schema consistency, metrics completeness, test coverage
 
-## [1.0.0] — 2026-07-15
+## [1.0.0] - 2026-07-15
 
 ### Added
 - SQLite WAL-mode ledger with 90-day retention
@@ -60,47 +82,47 @@ All notable changes to Toche will be documented in this file.
 - Metrics dashboard (`toche stats`)
 - `toche doctor` and `toche status` commands
 
-## [0.9.0] — 2026-07-14
+## [0.9.0] - 2026-07-14
 
 ### Added
 - Graphify CLI wrapper for knowledge graph queries
 
-## [0.8.0] — 2026-07-14
+## [0.8.0] - 2026-07-14
 
 ### Added
 - Session Continuity checkpoint system
 
-## [0.7.0] — 2026-07-14
+## [0.7.0] - 2026-07-14
 
 ### Added
 - Persistent Safe Cache for cross-session response reuse
 
-## [0.6.0] — 2026-07-13
+## [0.6.0] - 2026-07-13
 
 ### Added
 - Efficiency profiles: concise and careful instruction injection
 
-## [0.5.0] — 2026-07-13
+## [0.5.0] - 2026-07-13
 
 ### Added
 - Safe Context Reduction with RTK TOML filter engine
 
-## [0.4.0] — 2026-07-12
+## [0.4.0] - 2026-07-12
 
 ### Added
 - Request Shield: fingerprinting, coalescing, ledger tracking
 
-## [0.3.0] — 2026-07-12
+## [0.3.0] - 2026-07-12
 
 ### Added
 - Provider Cache Coordinator with breakpoint detection
 
-## [0.2.0] — 2026-07-11
+## [0.2.0] - 2026-07-11
 
 ### Added
 - Usage metering and cost estimation with embedded pricing map
 
-## [0.1.0] — 2026-07-10
+## [0.1.0] - 2026-07-10
 
 ### Added
 - Initial gateway: reverse proxy for Anthropic Messages API
