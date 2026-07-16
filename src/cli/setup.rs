@@ -1,7 +1,7 @@
 use anyhow::Context;
 use tracing::info;
 
-use crate::config::utils::atomic_write;
+use crate::config::utils::atomic_write_secure;
 use crate::profiles::loader::config_dir;
 use crate::profiles::types::{AuthMethod, Profile, Profiles};
 
@@ -39,7 +39,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let toml_str = toml::to_string_pretty(&profiles).context("Failed to serialize profiles")?;
     let path = dir.join("profiles.toml");
-    atomic_write(&path, &toml_str)?;
+    atomic_write_secure(&path, &toml_str)?;
 
     println!(
         "Profile '{}' saved to {}",
@@ -56,8 +56,7 @@ pub async fn run() -> anyhow::Result<()> {
 fn detect_graphify() {
     println!();
     let on_path = which::which("graphify").is_ok();
-    let uv_path = dirs::home_dir()
-        .unwrap()
+    let uv_path = crate::config::utils::home_dir()
         .join(".local")
         .join("bin")
         .join("graphify");
@@ -84,8 +83,7 @@ fn detect_graphify() {
 }
 
 fn detect_claude_config() -> anyhow::Result<Option<serde_json::Value>> {
-    let path = dirs::home_dir()
-        .unwrap()
+    let path = crate::config::utils::home_dir()
         .join(".claude")
         .join("settings.json");
     if !path.exists() {

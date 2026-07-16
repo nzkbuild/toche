@@ -41,29 +41,129 @@ impl LedgerDb {
             "PRAGMA journal_mode=WAL;
              PRAGMA busy_timeout=5000;",
         );
+
+        // Integrity check before any operations
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap_or_else(|_| "failed".into());
+        if integrity != "ok" {
+            anyhow::bail!("Database integrity check failed: {}", integrity);
+        }
+
+        // Schema version tracking
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS ledger (
-                id INTEGER PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                model TEXT NOT NULL,
-                profile_name TEXT NOT NULL DEFAULT '',
-                input_tokens INTEGER NOT NULL DEFAULT 0,
-                output_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
-                coalesced_count INTEGER NOT NULL DEFAULT 0,
-                latency_ms INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'success',
-                cost REAL,
-                project_path TEXT NOT NULL DEFAULT '',
-                reduction_input_tokens INTEGER NOT NULL DEFAULT 0,
-                reduction_output_tokens INTEGER NOT NULL DEFAULT 0,
-                reduction_count INTEGER NOT NULL DEFAULT 0,
-                efficiency_mode TEXT NOT NULL DEFAULT '',
-                local_cache_hit INTEGER NOT NULL DEFAULT 0
-            )",
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)",
             [],
         )?;
+
+        let current_version: i32 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        const EXPECTED_VERSION: i32 = 8;
+
+        if current_version > EXPECTED_VERSION {
+            anyhow::bail!(
+                "Database was created by a newer version of Toche (schema version {} > {}). \
+                 Please upgrade Toche or use a backup.",
+                current_version,
+                EXPECTED_VERSION
+            );
+        }
+
+        // Version 1: base ledger table (original columns only)
+        if current_version < 1 {
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS ledger (
+                    id INTEGER PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    profile_name TEXT NOT NULL DEFAULT '',
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    latency_ms INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'success',
+                    cost REAL,
+                    project_path TEXT NOT NULL DEFAULT ''
+                )",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (1)",
+                [],
+            )?;
+        }
+
+        // Versions 2–7: column additions over time (applied only for DBs that
+        // predate each column).
+        if current_version < 2 {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN coalesced_count INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (2)",
+                [],
+            )?;
+        }
+        if current_version < 3 {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN reduction_input_tokens INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (3)",
+                [],
+            )?;
+        }
+        if current_version < 4 {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN reduction_output_tokens INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (4)",
+                [],
+            )?;
+        }
+        if current_version < 5 {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN reduction_count INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (5)",
+                [],
+            )?;
+        }
+        if current_version < 6 {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN efficiency_mode TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (6)",
+                [],
+            )?;
+        }
+        if current_version < 7 {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN local_cache_hit INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (7)",
+                [],
+            )?;
+        }
+
+        // Indexes (safe to recreate)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ledger_timestamp ON ledger(timestamp)",
             [],
@@ -73,48 +173,17 @@ impl LedgerDb {
             [],
         )?;
 
-        // Migration: add new columns to existing databases
-        let columns: Vec<String> = {
-            let mut stmt = conn.prepare("PRAGMA table_info(ledger)")?;
-            stmt.query_map([], |row| row.get::<_, String>(1))?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        if !columns.iter().any(|c| c == "coalesced_count") {
-            conn.execute(
-                "ALTER TABLE ledger ADD COLUMN coalesced_count INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-        }
-        if !columns.iter().any(|c| c == "reduction_input_tokens") {
-            conn.execute(
-                "ALTER TABLE ledger ADD COLUMN reduction_input_tokens INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-        }
-        if !columns.iter().any(|c| c == "reduction_output_tokens") {
-            conn.execute(
-                "ALTER TABLE ledger ADD COLUMN reduction_output_tokens INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-        }
-        if !columns.iter().any(|c| c == "reduction_count") {
-            conn.execute(
-                "ALTER TABLE ledger ADD COLUMN reduction_count INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-        }
-        if !columns.iter().any(|c| c == "efficiency_mode") {
-            conn.execute(
-                "ALTER TABLE ledger ADD COLUMN efficiency_mode TEXT NOT NULL DEFAULT ''",
-                [],
-            )?;
-        }
-        if !columns.iter().any(|c| c == "local_cache_hit") {
-            conn.execute(
-                "ALTER TABLE ledger ADD COLUMN local_cache_hit INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-        }
+        // cache_rejects may also be created by CacheDb; ensure it exists here
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cache_rejects (
+                id INTEGER PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                project_path TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                reason TEXT NOT NULL
+            )",
+            [],
+        )?;
 
         Ok(Self { conn })
     }
@@ -174,78 +243,60 @@ impl LedgerDb {
         project_exact: &Option<String>,
         project_glob: &Option<String>,
     ) -> Result<UsageBreakdown> {
-        if model_filter.is_empty() {
-            let sql = "SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
-                    COALESCE(SUM(cache_read_input_tokens), 0), COALESCE(SUM(cache_creation_input_tokens), 0),
-                    COALESCE(SUM(coalesced_count), 0),
-                    COALESCE(AVG(latency_ms), 0),
-                    COALESCE(SUM(CASE WHEN cost IS NOT NULL THEN cost ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(reduction_input_tokens), 0),
-                    COALESCE(SUM(reduction_output_tokens), 0),
-                    COALESCE(SUM(reduction_count), 0),
-                    COALESCE(SUM(local_cache_hit), 0)
-             FROM ledger
-             WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)";
+        let rows_sql = "SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(cache_read_input_tokens), 0), COALESCE(SUM(cache_creation_input_tokens), 0),
+                COALESCE(SUM(coalesced_count), 0),
+                COALESCE(AVG(latency_ms), 0),
+                COALESCE(SUM(CASE WHEN cost IS NOT NULL THEN cost ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(reduction_input_tokens), 0),
+                COALESCE(SUM(reduction_output_tokens), 0),
+                COALESCE(SUM(reduction_count), 0),
+                COALESCE(SUM(local_cache_hit), 0),
+                COALESCE(SUM(CASE WHEN local_cache_hit = 0 AND coalesced_count = 0 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN local_cache_hit = 1 THEN input_tokens + output_tokens ELSE 0 END), 0),
+                COALESCE(AVG(CASE WHEN local_cache_hit = 1 THEN latency_ms ELSE NULL END), 0),
+                COALESCE(AVG(CASE WHEN local_cache_hit = 0 THEN latency_ms ELSE NULL END), 0)
+         FROM ledger
+         WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)";
 
+        let row_to_breakdown = |row: &rusqlite::Row| -> rusqlite::Result<UsageBreakdown> {
+            Ok(UsageBreakdown {
+                total_requests: row.get::<_, i64>(0)? as u64,
+                input_tokens: row.get::<_, i64>(1)? as u64,
+                output_tokens: row.get::<_, i64>(2)? as u64,
+                cache_read_input_tokens: row.get::<_, i64>(3)? as u64,
+                cache_creation_input_tokens: row.get::<_, i64>(4)? as u64,
+                coalesced_count: row.get::<_, i64>(5)? as u64,
+                avg_latency_ms: row.get::<_, f64>(6)?,
+                total_cost_known: row.get::<_, f64>(7)?,
+                total_cost_unknown_requests: row.get::<_, i64>(8)? as u64,
+                reduction_input_tokens: row.get::<_, i64>(9)? as u64,
+                reduction_output_tokens: row.get::<_, i64>(10)? as u64,
+                reduction_count: row.get::<_, i64>(11)? as u64,
+                efficiency_mode: String::new(),
+                local_cache_hit_count: row.get::<_, i64>(12)? as u64,
+                upstream_requests: row.get::<_, i64>(13)? as u64,
+                local_hit_tokens_saved: row.get::<_, i64>(14)? as u64,
+                invalidated_cache_candidates: 0,
+                local_hit_avg_latency_ms: row.get::<_, f64>(15)?,
+                upstream_avg_latency_ms: row.get::<_, f64>(16)?,
+            })
+        };
+
+        if model_filter.is_empty() {
             let result = self.conn.query_row(
-                sql,
+                rows_sql,
                 rusqlite::params![project_exact, project_glob],
-                |row| {
-                    Ok(UsageBreakdown {
-                        total_requests: row.get::<_, i64>(0)? as u64,
-                        input_tokens: row.get::<_, i64>(1)? as u64,
-                        output_tokens: row.get::<_, i64>(2)? as u64,
-                        cache_read_input_tokens: row.get::<_, i64>(3)? as u64,
-                        cache_creation_input_tokens: row.get::<_, i64>(4)? as u64,
-                        coalesced_count: row.get::<_, i64>(5)? as u64,
-                        avg_latency_ms: row.get::<_, f64>(6)?,
-                        total_cost_known: row.get::<_, f64>(7)?,
-                        total_cost_unknown_requests: row.get::<_, i64>(8)? as u64,
-                        reduction_input_tokens: row.get::<_, i64>(9)? as u64,
-                        reduction_output_tokens: row.get::<_, i64>(10)? as u64,
-                        reduction_count: row.get::<_, i64>(11)? as u64,
-                        efficiency_mode: String::new(),
-                        local_cache_hit_count: row.get::<_, i64>(12)? as u64,
-                    })
-                },
+                row_to_breakdown,
             )?;
             Ok(result)
         } else {
-            let sql = "SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
-                    COALESCE(SUM(cache_read_input_tokens), 0), COALESCE(SUM(cache_creation_input_tokens), 0),
-                    COALESCE(SUM(coalesced_count), 0),
-                    COALESCE(AVG(latency_ms), 0),
-                    COALESCE(SUM(CASE WHEN cost IS NOT NULL THEN cost ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(reduction_input_tokens), 0),
-                    COALESCE(SUM(reduction_output_tokens), 0),
-                    COALESCE(SUM(reduction_count), 0),
-                    COALESCE(SUM(local_cache_hit), 0)
-             FROM ledger
-             WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2) AND model = ?3";
-
+            let sql = format!("{rows_sql} AND model = ?3");
             let result = self.conn.query_row(
-                sql,
+                &sql,
                 rusqlite::params![project_exact, project_glob, model_filter],
-                |row| {
-                    Ok(UsageBreakdown {
-                        total_requests: row.get::<_, i64>(0)? as u64,
-                        input_tokens: row.get::<_, i64>(1)? as u64,
-                        output_tokens: row.get::<_, i64>(2)? as u64,
-                        cache_read_input_tokens: row.get::<_, i64>(3)? as u64,
-                        cache_creation_input_tokens: row.get::<_, i64>(4)? as u64,
-                        coalesced_count: row.get::<_, i64>(5)? as u64,
-                        avg_latency_ms: row.get::<_, f64>(6)?,
-                        total_cost_known: row.get::<_, f64>(7)?,
-                        total_cost_unknown_requests: row.get::<_, i64>(8)? as u64,
-                        reduction_input_tokens: row.get::<_, i64>(9)? as u64,
-                        reduction_output_tokens: row.get::<_, i64>(10)? as u64,
-                        reduction_count: row.get::<_, i64>(11)? as u64,
-                        efficiency_mode: String::new(),
-                        local_cache_hit_count: row.get::<_, i64>(12)? as u64,
-                    })
-                },
+                row_to_breakdown,
             )?;
             Ok(result)
         }
@@ -254,7 +305,18 @@ impl LedgerDb {
     pub fn get_summary(&self, project_path: Option<&str>) -> Result<StatsSummary> {
         let (exact, glob) = Self::project_filter(project_path);
 
-        let total = self.build_breakdown("", &exact, &glob)?;
+        let mut total = self.build_breakdown("", &exact, &glob)?;
+
+        // Query cache_rejects for invalidated count
+        let rejected_sql = match &exact {
+            Some(_) => "SELECT COUNT(*) FROM cache_rejects WHERE project_path = ?1 OR project_path GLOB ?2",
+            None => "SELECT COUNT(*) FROM cache_rejects",
+        };
+        let rejected: i64 = match &exact {
+            Some(_) => self.conn.query_row(rejected_sql, rusqlite::params![exact, glob], |row| row.get(0)).unwrap_or(0),
+            None => self.conn.query_row(rejected_sql, [], |row| row.get(0)).unwrap_or(0),
+        };
+        total.invalidated_cache_candidates = rejected as u64;
 
         let by_model: Vec<ModelBreakdown> = {
             let mut stmt = self.conn.prepare(
@@ -290,7 +352,11 @@ impl LedgerDb {
                         COALESCE(SUM(reduction_input_tokens), 0),
                         COALESCE(SUM(reduction_output_tokens), 0),
                         COALESCE(SUM(reduction_count), 0),
-                        COALESCE(SUM(local_cache_hit), 0)
+                        COALESCE(SUM(local_cache_hit), 0),
+                        COALESCE(SUM(CASE WHEN local_cache_hit = 0 AND coalesced_count = 0 THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN local_cache_hit = 1 THEN input_tokens + output_tokens ELSE 0 END), 0),
+                        COALESCE(AVG(CASE WHEN local_cache_hit = 1 THEN latency_ms ELSE NULL END), 0),
+                        COALESCE(AVG(CASE WHEN local_cache_hit = 0 THEN latency_ms ELSE NULL END), 0)
                  FROM ledger
                  WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
                  GROUP BY DATE(timestamp) ORDER BY DATE(timestamp) DESC LIMIT 30",
@@ -316,6 +382,11 @@ impl LedgerDb {
                         reduction_count: row.get::<_, i64>(12)? as u64,
                         efficiency_mode: String::new(),
                         local_cache_hit_count: row.get::<_, i64>(13)? as u64,
+                        upstream_requests: row.get::<_, i64>(14)? as u64,
+                        local_hit_tokens_saved: row.get::<_, i64>(15)? as u64,
+                        invalidated_cache_candidates: 0,
+                        local_hit_avg_latency_ms: row.get::<_, f64>(16)?,
+                        upstream_avg_latency_ms: row.get::<_, f64>(17)?,
                     },
                 })
             })?;

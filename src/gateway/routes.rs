@@ -48,6 +48,16 @@ fn extract_model(body: &str) -> String {
     "unknown".to_string()
 }
 
+/// Check whether a bypass header is set to "true" (case-insensitive).
+fn is_bypassed(headers: &HeaderMap, name: &str) -> bool {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_lowercase())
+        .as_deref()
+        == Some("true")
+}
+
 /// Result of forwarding a request to the upstream API.
 struct ForwardedResponse {
     status: u16,
@@ -177,11 +187,24 @@ pub async fn messages(
     // Step 1: Request Shield — coalesce identical in-flight requests on the
     // raw body (before any reduction/cache modifications) for maximum
     // coalescing.
+    let bypass_all = is_bypassed(&headers, "x-toche-bypass");
+    let bypass_shield = bypass_all || is_bypassed(&headers, "x-toche-bypass-shield");
+    let bypass_safe_cache = bypass_all || is_bypassed(&headers, "x-toche-bypass-safe-cache");
+    let bypass_reduce = bypass_all || is_bypassed(&headers, "x-toche-bypass-reduce");
+    let bypass_efficiency = bypass_all || is_bypassed(&headers, "x-toche-bypass-efficiency");
+    let bypass_cache = bypass_all || is_bypassed(&headers, "x-toche-bypass-cache");
+
     let fingerprint = shield::fingerprint::compute(&body);
 
-    let shield_result = shield::coalesce::store()
-        .try_acquire(&upstream_url, &fingerprint)
-        .await;
+    let shield_result = if bypass_shield {
+        shield::coalesce::CoalesceResult::Forward {
+            key: String::new(),
+        }
+    } else {
+        shield::coalesce::store()
+            .try_acquire(&upstream_url, &fingerprint)
+            .await
+    };
 
     let (forwarded, shield_key_for_complete) = match shield_result {
         shield::coalesce::CoalesceResult::Coalesced { captured } => {
@@ -217,12 +240,6 @@ pub async fn messages(
 
             // Step 1.5: Persistent safe cache check (after shield, before reduce).
             let safe_cache_cfg = profile.safe_cache.as_ref();
-            let bypass_safe_cache = headers
-                .get("x-toche-bypass-safe-cache")
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.trim().to_lowercase())
-                .as_deref()
-                == Some("true");
 
             let mut cache_hit: Option<ForwardedResponse> = None;
 
@@ -281,12 +298,6 @@ pub async fn messages(
             // before cache injection — deterministic reduction is cache-friendly).
             let default_reduce = reduce::config::ReduceConfig::default();
             let reduce_cfg = profile.reduce.as_ref().unwrap_or(&default_reduce);
-            let bypass_reduce = headers
-                .get("x-toche-bypass-reduce")
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.trim().to_lowercase())
-                .as_deref()
-                == Some("true");
 
             let reduction = reduce::transform::reduce_body(&body, reduce_cfg, bypass_reduce)
                 .unwrap_or_else(|e| {
@@ -306,12 +317,6 @@ pub async fn messages(
             // Step 2.5: Efficiency profile injection (after reduce, before cache).
             let default_efficiency = efficiency::config::EfficiencyConfig::default();
             let efficiency_cfg = profile.efficiency.as_ref().unwrap_or(&default_efficiency);
-            let bypass_efficiency = headers
-                .get("x-toche-bypass-efficiency")
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.trim().to_lowercase())
-                .as_deref()
-                == Some("true");
 
             let instruction = if bypass_efficiency {
                 None
@@ -345,7 +350,7 @@ pub async fn messages(
 
             // Step 3: Cache breakpoint injection on the efficiency-modified body.
             let final_body = if let Some(ref cache_cfg) = profile.cache {
-                if cache_cfg.enabled {
+                if cache_cfg.enabled && !bypass_cache {
                     let plan_result =
                         cache::breakpoint::find_breakpoints(&body_after_efficiency, &cache_cfg.breakpoint);
                     let bp = plan_result.unwrap_or_else(|e| {
@@ -436,12 +441,23 @@ pub async fn messages(
                                     );
                                 }
                             }
+                        } else if !verdict.safe && !verdict.reason.is_empty() {
+                            let db_path = config_dir().join("ledger.db");
+                            if let Ok(cache_db) =
+                                safe_cache::cache_db::CacheDb::open(&db_path)
+                            {
+                                let _ = cache_db.insert_reject(
+                                    &current_project_path(),
+                                    &fingerprint,
+                                    &verdict.reason,
+                                );
+                            }
                         }
                     }
                 }
             }
 
-            (fwd, Some(key))
+            (fwd, if key.is_empty() { None } else { Some(key) })
             }
         }
     };

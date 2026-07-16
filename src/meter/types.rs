@@ -39,6 +39,11 @@ pub struct UsageBreakdown {
     pub reduction_count: u64,
     pub efficiency_mode: String,
     pub local_cache_hit_count: u64,
+    pub upstream_requests: u64,
+    pub local_hit_tokens_saved: u64,
+    pub invalidated_cache_candidates: u64,
+    pub local_hit_avg_latency_ms: f64,
+    pub upstream_avg_latency_ms: f64,
 }
 impl Default for UsageBreakdown {
     fn default() -> Self {
@@ -57,6 +62,11 @@ impl Default for UsageBreakdown {
             reduction_count: 0,
             efficiency_mode: String::new(),
             local_cache_hit_count: 0,
+            upstream_requests: 0,
+            local_hit_tokens_saved: 0,
+            invalidated_cache_candidates: 0,
+            local_hit_avg_latency_ms: 0.0,
+            upstream_avg_latency_ms: 0.0,
         }
     }
 }

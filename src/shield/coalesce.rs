@@ -52,7 +52,7 @@ impl CoalesceStore {
         let key = format!("{}|{}", upstream_url, fingerprint);
 
         let rx = {
-            let mut pending = self.pending.lock().unwrap();
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(sender) = pending.get(&key) {
                 // Another request is in-flight — subscribe to its result
                 sender.subscribe()
@@ -77,7 +77,7 @@ impl CoalesceStore {
 
     /// Store the completed response and wake all waiters.
     pub fn complete(&self, key: &str, response: CapturedResponse) {
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(sender) = pending.remove(key) {
             // send() fails only if there are no receivers — that's fine,
             // it means all waiters went away before we completed.
@@ -87,7 +87,7 @@ impl CoalesceStore {
 
     /// Remove a failed request so waiters receive `Failed`.
     pub fn cancel(&self, key: &str) {
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(sender) = pending.remove(key) {
             let _ = sender.send(None);
         }

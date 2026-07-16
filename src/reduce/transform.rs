@@ -210,7 +210,7 @@ fn replace_content(block: &mut Value, new_text: &str) {
     if is_string {
         block["content"] = Value::String(new_text.to_string());
     } else if is_array {
-        let parts = block["content"].as_array_mut().unwrap();
+        let Some(parts) = block["content"].as_array_mut() else { return; };
         let mut replaced = false;
         for part in parts.iter_mut() {
             if part.get("type").and_then(Value::as_str) == Some("text") {

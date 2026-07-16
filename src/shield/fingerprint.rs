@@ -6,14 +6,27 @@ use sha2::{Digest, Sha256};
 /// Strips `stream` and all `cache_control` fields from content blocks before
 /// hashing, so that these wire-format and caching annotations don't
 /// change the identity of the semantic request.
+///
+/// Falls back to a raw-body hash if the JSON parse or canonical serialization
+/// fails.
 pub fn compute(body: &str) -> String {
-    let mut root: Value =
-        serde_json::from_str(body).expect("request body should be valid JSON");
+    match compute_canonical(body) {
+        Ok(fp) => fp,
+        Err(_) => {
+            let mut hasher = Sha256::new();
+            hasher.update(body.as_bytes());
+            format!("{:x}", hasher.finalize())
+        }
+    }
+}
+
+fn compute_canonical(body: &str) -> Result<String, ()> {
+    let mut root: Value = serde_json::from_str(body).map_err(|_| ())?;
     normalize(&mut root);
-    let canonical = serde_json::to_string(&root).expect("serialization should succeed");
+    let canonical = serde_json::to_string(&root).map_err(|_| ())?;
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
-    format!("{:x}", hasher.finalize())
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// Remove fields that don't affect the LLM response from a JSON value.

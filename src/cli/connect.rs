@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use crate::config::utils::{atomic_write, read_jsonc};
+use crate::config::utils;
 
 pub async fn run(agent: Option<&str>) -> anyhow::Result<()> {
     let agent = agent.unwrap_or("claude");
@@ -12,26 +12,37 @@ pub async fn run(agent: Option<&str>) -> anyhow::Result<()> {
 }
 
 async fn connect_claude() -> anyhow::Result<()> {
-    let settings_path = dirs::home_dir()
-        .unwrap()
+    let settings_path = utils::home_dir()
         .join(".claude")
         .join("settings.json");
-
-    // 1. Backup existing settings
     let backup_path = settings_path.with_extension("json.toche-backup");
+
+    // Check if already connected
     if settings_path.exists() {
+        let current = utils::read_jsonc(&settings_path)
+            .context("Failed to parse settings.json")?;
+        let already_toche = current
+            .get("baseURL")
+            .and_then(|v| v.as_str())
+            .map(|s| s.contains("127.0.0.1:8743"))
+            .unwrap_or(false);
+        if already_toche {
+            println!("Claude Code is already connected to Toche.");
+            return Ok(());
+        }
+        // Only backup if NOT already connected to Toche
         std::fs::copy(&settings_path, &backup_path)
             .context("Failed to backup settings.json")?;
     }
 
-    // 2. Read settings (JSONC-tolerant)
+    // Read settings (JSONC-tolerant)
     let mut settings = if settings_path.exists() {
-        read_jsonc(&settings_path).context("Failed to parse settings.json")?
+        utils::read_jsonc(&settings_path).context("Failed to parse settings.json")?
     } else {
         serde_json::json!({})
     };
 
-    // 3. Set Toche as base URL
+    // Set Toche as base URL
     if let Some(obj) = settings.as_object_mut() {
         obj.insert(
             "baseURL".into(),
@@ -39,9 +50,9 @@ async fn connect_claude() -> anyhow::Result<()> {
         );
     }
 
-    // 4. Atomic write back
+    // Atomic write back
     let content = serde_json::to_string_pretty(&settings)?;
-    atomic_write(&settings_path, &content)?;
+    utils::atomic_write(&settings_path, &content)?;
 
     println!("Claude Code now routing through Toche (http://127.0.0.1:8743).");
     println!("Backup saved to: {}", backup_path.display());

@@ -52,25 +52,68 @@ impl CheckpointDb {
             "PRAGMA journal_mode=WAL;
              PRAGMA busy_timeout=5000;",
         );
+
+        // Integrity check before any operations
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap_or_else(|_| "failed".into());
+        if integrity != "ok" {
+            anyhow::bail!("Database integrity check failed: {}", integrity);
+        }
+
+        // Schema version tracking (shared across all tables in this DB)
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS checkpoints (
-                id INTEGER PRIMARY KEY,
-                project_path TEXT NOT NULL,
-                git_head TEXT NOT NULL DEFAULT '',
-                workspace_fingerprint TEXT NOT NULL DEFAULT '',
-                task TEXT NOT NULL DEFAULT '',
-                completed TEXT NOT NULL DEFAULT '',
-                changed_files TEXT NOT NULL DEFAULT '',
-                verification TEXT NOT NULL DEFAULT '',
-                open_risks TEXT NOT NULL DEFAULT '',
-                next_action TEXT NOT NULL DEFAULT '',
-                facts_json TEXT NOT NULL DEFAULT '{}',
-                model_assisted INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )",
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)",
             [],
         )?;
+
+        let current_version: i32 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        const EXPECTED_VERSION: i32 = 9;
+
+        if current_version > EXPECTED_VERSION {
+            anyhow::bail!(
+                "Database was created by a newer version of Toche (schema version {} > {}). \
+                 Please upgrade Toche or use a backup.",
+                current_version,
+                EXPECTED_VERSION
+            );
+        }
+
+        // Note: versions 1-7 are ledger table versions, version 8 is safe_cache.
+        // Checkpoints table starts at version 9.
+        if current_version < 9 {
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS checkpoints (
+                    id INTEGER PRIMARY KEY,
+                    project_path TEXT NOT NULL,
+                    git_head TEXT NOT NULL DEFAULT '',
+                    workspace_fingerprint TEXT NOT NULL DEFAULT '',
+                    task TEXT NOT NULL DEFAULT '',
+                    completed TEXT NOT NULL DEFAULT '',
+                    changed_files TEXT NOT NULL DEFAULT '',
+                    verification TEXT NOT NULL DEFAULT '',
+                    open_risks TEXT NOT NULL DEFAULT '',
+                    next_action TEXT NOT NULL DEFAULT '',
+                    facts_json TEXT NOT NULL DEFAULT '{}',
+                    model_assisted INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (9)",
+                [],
+            )?;
+        }
+
         Ok(Self { conn })
     }
 

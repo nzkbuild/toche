@@ -47,24 +47,77 @@ impl CacheDb {
             "PRAGMA journal_mode=WAL;
              PRAGMA busy_timeout=5000;",
         );
+
+        // Integrity check before any operations
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap_or_else(|_| "failed".into());
+        if integrity != "ok" {
+            anyhow::bail!("Database integrity check failed: {}", integrity);
+        }
+
+        // Schema version tracking (shared across all tables in this DB)
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS safe_cache (
-                id INTEGER PRIMARY KEY,
-                project_path TEXT NOT NULL,
-                fingerprint TEXT NOT NULL,
-                workspace_fingerprint TEXT NOT NULL DEFAULT '',
-                response_hash TEXT NOT NULL,
-                model TEXT NOT NULL,
-                status INTEGER NOT NULL DEFAULT 200,
-                tokens_input INTEGER NOT NULL DEFAULT 0,
-                tokens_output INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                last_hit_at TEXT NOT NULL,
-                hit_count INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(project_path, fingerprint)
-            )",
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)",
             [],
         )?;
+
+        let current_version: i32 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        const EXPECTED_VERSION: i32 = 8;
+
+        if current_version > EXPECTED_VERSION {
+            anyhow::bail!(
+                "Database was created by a newer version of Toche (schema version {} > {}). \
+                 Please upgrade Toche or use a backup.",
+                current_version,
+                EXPECTED_VERSION
+            );
+        }
+
+        // Note: version 1 is the ledger table (managed by meter/db.rs).
+        // Safe-cache table starts at version 8.
+        if current_version < 8 {
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS safe_cache (
+                    id INTEGER PRIMARY KEY,
+                    project_path TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    workspace_fingerprint TEXT NOT NULL DEFAULT '',
+                    response_hash TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    status INTEGER NOT NULL DEFAULT 200,
+                    tokens_input INTEGER NOT NULL DEFAULT 0,
+                    tokens_output INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    last_hit_at TEXT NOT NULL,
+                    hit_count INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(project_path, fingerprint)
+                )",
+                [],
+            )?;
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS cache_rejects (
+                    id INTEGER PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    project_path TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    reason TEXT NOT NULL
+                )",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (8)",
+                [],
+            )?;
+        }
+
         Ok(Self { conn })
     }
 
@@ -218,6 +271,44 @@ impl CacheDb {
             }
         };
         Ok(rows)
+    }
+
+    /// Record a cache rejection for metrics tracking.
+    pub fn insert_reject(&self, project_path: &str, fingerprint: &str, reason: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO cache_rejects (timestamp, project_path, fingerprint, reason)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![now, project_path, fingerprint, reason],
+        )?;
+        Ok(())
+    }
+
+    /// Count rejected candidates, optionally filtered by project.
+    pub fn count_rejects(&self, project_path: Option<&str>) -> Result<u64> {
+        let count: i64 = match project_path {
+            Some(p) => self.conn.query_row(
+                "SELECT COUNT(*) FROM cache_rejects WHERE project_path = ?1",
+                rusqlite::params![p],
+                |row| row.get(0),
+            )?,
+            None => self.conn.query_row(
+                "SELECT COUNT(*) FROM cache_rejects",
+                [],
+                |row| row.get(0),
+            )?,
+        };
+        Ok(count as u64)
+    }
+
+    /// Delete rejected entries older than the given TTL. Returns count removed.
+    pub fn evict_expired_rejects(&self, ttl_days: u32) -> Result<u64> {
+        let cutoff = Utc::now() - chrono::Duration::days(ttl_days as i64);
+        let n = self.conn.execute(
+            "DELETE FROM cache_rejects WHERE timestamp < ?1",
+            rusqlite::params![cutoff.to_rfc3339()],
+        )?;
+        Ok(n as u64)
     }
 
     /// Total number of cache entries, optionally filtered by project.

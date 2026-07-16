@@ -31,8 +31,15 @@ pub async fn run(json: bool, entries: u32) -> anyhow::Result<()> {
         println!();
         let t = &output.summary.total;
         println!("Total requests:      {}", t.total_requests);
+        println!("Upstream requests:   {}", t.upstream_requests);
         println!("Coalesced requests:  {}", t.coalesced_count);
         println!("Local cache hits:    {}", t.local_cache_hit_count);
+        if t.invalidated_cache_candidates > 0 {
+            println!("Cache candidates rejected: {}", t.invalidated_cache_candidates);
+        }
+        if t.local_hit_tokens_saved > 0 {
+            println!("Tokens saved (local hits): {}", t.local_hit_tokens_saved);
+        }
         println!("Input tokens:        {}", t.input_tokens);
         println!("Output tokens:       {}", t.output_tokens);
         println!("Cache read tokens:   {}", t.cache_read_input_tokens);
@@ -56,7 +63,13 @@ pub async fn run(json: bool, entries: u32) -> anyhow::Result<()> {
             println!("  Reduced tokens:       {}", t.reduction_output_tokens);
             println!("  Tokens saved:         {}", saved);
         }
-        println!("Avg latency:         {:.0}ms", t.avg_latency_ms);
+        if t.local_hit_avg_latency_ms > 0.0 {
+            println!("Avg latency (local):   {:.0}ms", t.local_hit_avg_latency_ms);
+        }
+        if t.upstream_avg_latency_ms > 0.0 {
+            println!("Avg latency (upstream):{:.0}ms", t.upstream_avg_latency_ms);
+        }
+        println!("Avg latency:           {:.0}ms", t.avg_latency_ms);
         println!("Known cost:          ${:.6}", t.total_cost_known);
         if t.total_cost_unknown_requests > 0 {
             println!(

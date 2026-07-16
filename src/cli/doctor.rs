@@ -31,7 +31,7 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     // Claude Code integration
-    let claude_dir = dirs::home_dir().unwrap().join(".claude");
+    let claude_dir = crate::config::utils::home_dir().join(".claude");
     println!("Claude Code directory: {}", claude_dir.display());
     println!("  exists: {}", claude_dir.exists());
 
