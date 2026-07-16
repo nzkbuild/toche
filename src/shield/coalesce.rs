@@ -24,6 +24,11 @@ pub enum CoalesceResult {
 ///
 /// Uses `broadcast` channels so that N waiters can all receive a clone of
 /// the same response bytes when the leader completes.
+///
+/// Uses `std::sync::Mutex` (not `tokio::sync::Mutex`) because all lock
+/// durations are short (HashMap insert/remove) and poison recovery via
+/// `unwrap_or_else(|e| e.into_inner())` keeps the store available after
+/// a task panic. The mutex is never held across an `.await` point.
 pub struct CoalesceStore {
     pending: Mutex<HashMap<String, broadcast::Sender<Option<CapturedResponse>>>>,
 }

@@ -20,6 +20,9 @@ Thumbs.db
 .env
 *.pem
 *.key
+# Defense-in-depth: never commit Toche config files (may contain API keys)
+profiles.toml
+*.toche-backup
 
 
 # Added by cargo
