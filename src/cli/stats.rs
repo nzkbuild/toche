@@ -32,6 +32,7 @@ pub async fn run(json: bool, entries: u32) -> anyhow::Result<()> {
         let t = &output.summary.total;
         println!("Total requests:      {}", t.total_requests);
         println!("Coalesced requests:  {}", t.coalesced_count);
+        println!("Local cache hits:    {}", t.local_cache_hit_count);
         println!("Input tokens:        {}", t.input_tokens);
         println!("Output tokens:       {}", t.output_tokens);
         println!("Cache read tokens:   {}", t.cache_read_input_tokens);
@@ -87,8 +88,9 @@ pub async fn run(json: bool, entries: u32) -> anyhow::Result<()> {
                     .cost
                     .map(|c| format!("${c:.6}"))
                     .unwrap_or_else(|| "unknown".to_string());
+                let cache_mark = if e.local_cache_hit { " [CACHE]" } else { "" };
                 println!(
-                    "  {}  {:30}  {:>6} in {:>6} out  {:>4}ms  {}  {}",
+                    "  {}  {:30}  {:>6} in {:>6} out  {:>4}ms  {}  {}{}",
                     e.timestamp.format("%Y-%m-%d %H:%M:%S"),
                     e.model,
                     e.input_tokens,
@@ -96,6 +98,7 @@ pub async fn run(json: bool, entries: u32) -> anyhow::Result<()> {
                     e.latency_ms,
                     e.status,
                     cost_str,
+                    cache_mark,
                 );
             }
         }

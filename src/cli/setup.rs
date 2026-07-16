@@ -92,5 +92,6 @@ fn import_from_claude_settings(settings: &serde_json::Value) -> anyhow::Result<P
         cache: None,
         reduce: None,
         efficiency: None,
+        safe_cache: None,
     })
 }

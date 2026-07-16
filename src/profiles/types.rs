@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 use crate::efficiency::config::EfficiencyConfig;
 use crate::reduce::config::ReduceConfig;
+use crate::safe_cache::config::SafeCacheConfig;
 
 /// Controls how Toche manages provider prompt caching for a profile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +83,9 @@ pub struct Profile {
     /// Optional per-profile efficiency behaviour configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub efficiency: Option<EfficiencyConfig>,
+    /// Optional per-profile persistent safe cache configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_cache: Option<SafeCacheConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

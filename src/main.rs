@@ -8,6 +8,7 @@ mod gateway;
 mod meter;
 mod profiles;
 mod reduce;
+mod safe_cache;
 mod shield;
 
 #[derive(Parser)]
@@ -46,6 +47,36 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Manage the persistent safe cache
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CacheAction {
+    /// List cache entries
+    Inspect {
+        #[arg(long)]
+        json: bool,
+        #[arg(long, default_value = "50")]
+        entries: u32,
+    },
+    /// Clear cache entries
+    Clear {
+        /// Only clear entries for the current project (default if no flag)
+        #[arg(long)]
+        project: bool,
+        /// Clear all cache entries (all projects)
+        #[arg(long)]
+        all: bool,
+    },
+    /// Explain why a specific request was/wasn't cached
+    Why {
+        /// Hex-encoded SHA-256 request fingerprint
+        fingerprint: String,
+    },
 }
 
 #[tokio::main]
@@ -67,6 +98,11 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Status) => cli::status::run().await,
         Some(Commands::Stats { json, entries }) => cli::stats::run(json, entries).await,
         Some(Commands::Expand { hash, json }) => cli::expand::run(hash, json).await,
+        Some(Commands::Cache { action }) => match action {
+            CacheAction::Inspect { json, entries } => cli::cache::run_inspect(json, entries).await,
+            CacheAction::Clear { project, all } => cli::cache::run_clear(project, all).await,
+            CacheAction::Why { fingerprint } => cli::cache::run_why(&fingerprint).await,
+        },
         None => gateway::serve().await,
     }
 }

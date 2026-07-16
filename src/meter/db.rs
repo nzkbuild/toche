@@ -24,6 +24,7 @@ pub struct NewLedgerRecord {
     pub reduction_output_tokens: u64,
     pub reduction_count: u64,
     pub efficiency_mode: String,
+    pub local_cache_hit: bool,
 }
 
 pub struct LedgerDb {
@@ -58,7 +59,8 @@ impl LedgerDb {
                 reduction_input_tokens INTEGER NOT NULL DEFAULT 0,
                 reduction_output_tokens INTEGER NOT NULL DEFAULT 0,
                 reduction_count INTEGER NOT NULL DEFAULT 0,
-                efficiency_mode TEXT NOT NULL DEFAULT ''
+                efficiency_mode TEXT NOT NULL DEFAULT '',
+                local_cache_hit INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -107,6 +109,12 @@ impl LedgerDb {
                 [],
             )?;
         }
+        if !columns.iter().any(|c| c == "local_cache_hit") {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN local_cache_hit INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
 
         Ok(Self { conn })
     }
@@ -115,8 +123,8 @@ impl LedgerDb {
         self.conn.execute(
             "INSERT INTO ledger (timestamp, model, profile_name, input_tokens, output_tokens,
              cache_read_input_tokens, cache_creation_input_tokens, coalesced_count, latency_ms, status, cost, project_path,
-             reduction_input_tokens, reduction_output_tokens, reduction_count, efficiency_mode)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             reduction_input_tokens, reduction_output_tokens, reduction_count, efficiency_mode, local_cache_hit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             rusqlite::params![
                 entry.timestamp.to_rfc3339(),
                 entry.model,
@@ -134,6 +142,7 @@ impl LedgerDb {
                 entry.reduction_output_tokens as i64,
                 entry.reduction_count as i64,
                 entry.efficiency_mode,
+                entry.local_cache_hit as i64,
             ],
         )?;
         self.cleanup_old()?;
@@ -174,7 +183,8 @@ impl LedgerDb {
                     COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(reduction_input_tokens), 0),
                     COALESCE(SUM(reduction_output_tokens), 0),
-                    COALESCE(SUM(reduction_count), 0)
+                    COALESCE(SUM(reduction_count), 0),
+                    COALESCE(SUM(local_cache_hit), 0)
              FROM ledger
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)";
 
@@ -196,6 +206,7 @@ impl LedgerDb {
                         reduction_output_tokens: row.get::<_, i64>(10)? as u64,
                         reduction_count: row.get::<_, i64>(11)? as u64,
                         efficiency_mode: String::new(),
+                        local_cache_hit_count: row.get::<_, i64>(12)? as u64,
                     })
                 },
             )?;
@@ -209,7 +220,8 @@ impl LedgerDb {
                     COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(reduction_input_tokens), 0),
                     COALESCE(SUM(reduction_output_tokens), 0),
-                    COALESCE(SUM(reduction_count), 0)
+                    COALESCE(SUM(reduction_count), 0),
+                    COALESCE(SUM(local_cache_hit), 0)
              FROM ledger
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2) AND model = ?3";
 
@@ -231,6 +243,7 @@ impl LedgerDb {
                         reduction_output_tokens: row.get::<_, i64>(10)? as u64,
                         reduction_count: row.get::<_, i64>(11)? as u64,
                         efficiency_mode: String::new(),
+                        local_cache_hit_count: row.get::<_, i64>(12)? as u64,
                     })
                 },
             )?;
@@ -276,7 +289,8 @@ impl LedgerDb {
                         COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0),
                         COALESCE(SUM(reduction_input_tokens), 0),
                         COALESCE(SUM(reduction_output_tokens), 0),
-                        COALESCE(SUM(reduction_count), 0)
+                        COALESCE(SUM(reduction_count), 0),
+                        COALESCE(SUM(local_cache_hit), 0)
                  FROM ledger
                  WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
                  GROUP BY DATE(timestamp) ORDER BY DATE(timestamp) DESC LIMIT 30",
@@ -301,6 +315,7 @@ impl LedgerDb {
                         reduction_output_tokens: row.get::<_, i64>(11)? as u64,
                         reduction_count: row.get::<_, i64>(12)? as u64,
                         efficiency_mode: String::new(),
+                        local_cache_hit_count: row.get::<_, i64>(13)? as u64,
                     },
                 })
             })?;
@@ -319,7 +334,7 @@ impl LedgerDb {
         let mut stmt = self.conn.prepare(
             "SELECT id, timestamp, model, profile_name, input_tokens, output_tokens,
                     cache_read_input_tokens, cache_creation_input_tokens, coalesced_count, latency_ms, status, cost, project_path,
-                    reduction_input_tokens, reduction_output_tokens, reduction_count, efficiency_mode
+                    reduction_input_tokens, reduction_output_tokens, reduction_count, efficiency_mode, local_cache_hit
              FROM ledger
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
              ORDER BY timestamp DESC LIMIT ?3",
@@ -349,6 +364,7 @@ impl LedgerDb {
                     reduction_output_tokens: row.get::<_, i64>(14)? as u64,
                     reduction_count: row.get::<_, i64>(15)? as u64,
                     efficiency_mode: row.get(16)?,
+                    local_cache_hit: row.get::<_, i64>(17)? != 0,
                 })
             },
         )?;
@@ -385,6 +401,7 @@ mod tests {
             reduction_output_tokens: 0,
             reduction_count: 0,
             efficiency_mode: String::new(),
+            local_cache_hit: false,
         };
         let id = db.record(&record).unwrap();
         assert!(id > 0);
@@ -416,6 +433,7 @@ mod tests {
             reduction_output_tokens: 0,
             reduction_count: 0,
             efficiency_mode: String::new(),
+            local_cache_hit: false,
         })
         .unwrap();
         db.record(&NewLedgerRecord {
@@ -435,6 +453,7 @@ mod tests {
             reduction_output_tokens: 0,
             reduction_count: 0,
             efficiency_mode: String::new(),
+            local_cache_hit: false,
         })
         .unwrap();
 
@@ -467,6 +486,7 @@ mod tests {
             reduction_output_tokens: 0,
             reduction_count: 0,
             efficiency_mode: String::new(),
+            local_cache_hit: false,
         })
         .unwrap();
 

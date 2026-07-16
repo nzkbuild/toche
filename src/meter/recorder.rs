@@ -119,6 +119,7 @@ mod tests {
             reduction_output_tokens: 0,
             reduction_count: 0,
             efficiency_mode: String::new(),
+            local_cache_hit: false,
         };
 
         let _id = record_request(&db, &pricing, record).unwrap();
@@ -151,6 +152,7 @@ mod tests {
             reduction_output_tokens: 0,
             reduction_count: 0,
             efficiency_mode: String::new(),
+            local_cache_hit: false,
         };
 
         let _id = record_request(&db, &pricing, record).unwrap();

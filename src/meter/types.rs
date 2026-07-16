@@ -20,7 +20,9 @@ pub struct LedgerEntry {
     pub reduction_output_tokens: u64,
     pub reduction_count: u64,
     pub efficiency_mode: String,
+    pub local_cache_hit: bool,
 }
+
 #[derive(Debug, Clone, Serialize)]
 pub struct UsageBreakdown {
     pub input_tokens: u64,
@@ -36,6 +38,7 @@ pub struct UsageBreakdown {
     pub reduction_output_tokens: u64,
     pub reduction_count: u64,
     pub efficiency_mode: String,
+    pub local_cache_hit_count: u64,
 }
 impl Default for UsageBreakdown {
     fn default() -> Self {
@@ -53,6 +56,7 @@ impl Default for UsageBreakdown {
             reduction_output_tokens: 0,
             reduction_count: 0,
             efficiency_mode: String::new(),
+            local_cache_hit_count: 0,
         }
     }
 }

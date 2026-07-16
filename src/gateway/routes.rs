@@ -15,6 +15,7 @@ use crate::meter::recorder::{current_project_path, estimate_tokens, record_reque
 use crate::profiles::loader::{config_dir, load_profiles};
 use crate::profiles::types::CacheMode;
 use crate::reduce;
+use crate::safe_cache;
 use crate::shield;
 
 /// Parse the "model" field from an Anthropic Messages API JSON body.
@@ -58,6 +59,7 @@ struct ForwardedResponse {
     reduction_count: u64,
     efficiency_tokens_added: u64,
     efficiency_mode: String,
+    local_cache_hit: bool,
 }
 
 /// Forward a request to the upstream and collect the full response body.
@@ -123,6 +125,7 @@ async fn forward_to_upstream(
         reduction_count: 0,
         efficiency_tokens_added: 0,
         efficiency_mode: String::new(),
+        local_cache_hit: false,
     })
 }
 
@@ -199,6 +202,7 @@ pub async fn messages(
                     reduction_count: 0,
                     efficiency_tokens_added: 0,
                     efficiency_mode: String::new(),
+                    local_cache_hit: false,
                 },
                 None,
             )
@@ -209,6 +213,68 @@ pub async fn messages(
         }
         shield::coalesce::CoalesceResult::Forward { key } => {
             info!("Forwarding to upstream: {upstream_url}");
+
+            // Step 1.5: Persistent safe cache check (after shield, before reduce).
+            let safe_cache_cfg = profile.safe_cache.as_ref();
+            let bypass_safe_cache = headers
+                .get("x-toche-bypass-safe-cache")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.trim().to_lowercase())
+                .as_deref()
+                == Some("true");
+
+            let mut cache_hit: Option<ForwardedResponse> = None;
+
+            if !bypass_safe_cache {
+                if let Some(cfg) = safe_cache_cfg {
+                    if cfg.enabled {
+                        let project = current_project_path();
+                        let ws_fp = safe_cache::workspace::compute_workspace_fingerprint();
+                        let db_path = config_dir().join("ledger.db");
+                        if let Ok(cache_db) = safe_cache::cache_db::CacheDb::open(&db_path) {
+                            let _ = cache_db.evict_expired(cfg.ttl_days);
+                            if let Ok(Some(entry)) = cache_db.lookup(&project, &fingerprint) {
+                                if entry.workspace_fingerprint == ws_fp {
+                                    if let Ok(bytes) = reduce::storage::retrieve(&entry.response_hash) {
+                                        let _ = cache_db.touch(&project, &fingerprint);
+                                        info!(
+                                            "Safe cache hit: fingerprint={}.., project={}, model={}",
+                                            &fingerprint[..16.min(fingerprint.len())],
+                                            project,
+                                            model
+                                        );
+                                        cache_hit = Some(ForwardedResponse {
+                                            status: entry.status as u16,
+                                            body_bytes: bytes,
+                                            cache_read_tokens: 0,
+                                            cache_create_tokens: 0,
+                                            coalesced_count: 0,
+                                            reduction_input_tokens: 0,
+                                            reduction_output_tokens: 0,
+                                            reduction_count: 0,
+                                            efficiency_tokens_added: 0,
+                                            efficiency_mode: String::new(),
+                                            local_cache_hit: true,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(cached) = cache_hit {
+                // Complete shield slot so waiters get the cached response
+                shield::coalesce::store().complete(
+                    &key,
+                    shield::coalesce::CapturedResponse {
+                        status: cached.status,
+                        body_bytes: cached.body_bytes.clone(),
+                    },
+                );
+                (cached, None)
+            } else {
 
             // Step 2: Reduce tool output in the request body (after shield,
             // before cache injection — deterministic reduction is cache-friendly).
@@ -337,7 +403,45 @@ pub async fn messages(
             fwd.efficiency_tokens_added = efficiency_tokens_added;
             fwd.efficiency_mode = efficiency_mode_name;
 
+            // On cache miss with safe response, store for future reuse.
+            if !bypass_safe_cache {
+                if let Some(cfg) = safe_cache_cfg {
+                    if cfg.enabled && fwd.status >= 200 && fwd.status < 300 {
+                        let verdict =
+                            safe_cache::inspect::inspect_response(&fwd.body_bytes);
+                        if verdict.safe
+                            && (fwd.body_bytes.len() as u64) <= cfg.max_entry_bytes
+                        {
+                            if let Ok(hash) = reduce::storage::store(&fwd.body_bytes) {
+                                let ws_fp =
+                                    safe_cache::workspace::compute_workspace_fingerprint();
+                                let db_path = config_dir().join("ledger.db");
+                                if let Ok(cache_db) =
+                                    safe_cache::cache_db::CacheDb::open(&db_path)
+                                {
+                                    let _ = cache_db.insert(
+                                        &safe_cache::cache_db::NewCacheEntry {
+                                            project_path: current_project_path(),
+                                            fingerprint: fingerprint.clone(),
+                                            workspace_fingerprint: ws_fp,
+                                            response_hash: hash,
+                                            model: model.clone(),
+                                            status: fwd.status as i32,
+                                            tokens_input: input_tokens,
+                                            tokens_output: estimate_tokens(
+                                                &String::from_utf8_lossy(&fwd.body_bytes),
+                                            ),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             (fwd, Some(key))
+            }
         }
     };
 
@@ -408,6 +512,7 @@ pub async fn messages(
             reduction_output_tokens: reduction_output,
             reduction_count,
             efficiency_mode,
+            local_cache_hit: forwarded.local_cache_hit,
         };
         if let Err(e) = record_request(&db, &pricing, record) {
             error!("Failed to record to ledger: {e}");
