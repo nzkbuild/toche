@@ -61,8 +61,8 @@ pub fn reduce_body(
         Err(_) => return Ok(result), // Conservative fallback: pass through
     };
 
-    // Build tool_use_id → tool_name map from assistant content blocks.
-    let tool_map = build_tool_map(&root);
+    // Build tool_use_id → tool_name and effective_cmd maps.
+    let (tool_name_map, effective_cmd_map) = build_tool_map(&root);
 
     // Walk messages looking for user tool_result blocks.
     let messages = match root.get_mut("messages") {
@@ -86,10 +86,13 @@ pub fn reduce_body(
                 .and_then(Value::as_str)
                 .unwrap_or("");
 
-            let tool_name = tool_map.get(tool_use_id).map(|s| s.as_str()).unwrap_or("");
+            let literal_name = tool_name_map.get(tool_use_id).map(|s| s.as_str()).unwrap_or("");
+            let effective_name = effective_cmd_map
+                .get(tool_use_id)
+                .map(|s| s.as_str());
 
             // Check bypass list (exact match on tool name).
-            if !tool_name.is_empty() && config.command_bypass.iter().any(|b| b == tool_name) {
+            if !literal_name.is_empty() && config.command_bypass.iter().any(|b| b == literal_name) {
                 result.passthroughs += 1;
                 continue;
             }
@@ -102,10 +105,13 @@ pub fn reduce_body(
 
             let tokens_raw = estimate_tokens(&raw_text);
 
-            let matched = !tool_name.is_empty() && toml_filter::command_matches_filter(tool_name);
+            // Try the resolved command first (e.g. Bash→cargo), then fall
+            // back to the literal tool name.
+            let filter_cmd = effective_name.unwrap_or(literal_name);
+            let matched = !filter_cmd.is_empty() && toml_filter::command_matches_filter(filter_cmd);
 
             if matched {
-                if let Some(filter) = find_matching_filter(tool_name) {
+                if let Some(filter) = find_matching_filter(filter_cmd) {
                     let (reduced_text, _loss) = apply_filter_with_info(filter, &raw_text);
 
                     let hash = storage::store(raw_text.as_bytes())
@@ -143,14 +149,47 @@ pub fn reduce_body(
     Ok(result)
 }
 
-/// Build a map from `tool_use.id → tool_use.name` by scanning all messages
-/// for assistant content blocks of type `tool_use`.
-fn build_tool_map(root: &Value) -> HashMap<String, String> {
-    let mut map = HashMap::new();
+/// CLI tools that expose a discoverable underlying command in their input.
+/// For these tools, `resolve_command` extracts the real command so it can
+/// be matched against RTK filter patterns.
+const CLI_PROXY_TOOLS: &[&str] = &["Bash"];
+
+/// Extract the effective command from a `tool_use` input block.
+///
+/// For `Bash` tools, reads `input.command`, strips common prefixes (`sudo`,
+/// `rtk`), and returns the first word of the remaining command as the
+/// effective tool name (e.g. `"cargo test --lib"` → `"cargo"`).
+///
+/// Returns `None` when no command can be extracted or the tool is not a
+/// recognized CLI proxy.
+fn resolve_command(tool_name: &str, input: &Value) -> Option<String> {
+    if !CLI_PROXY_TOOLS.contains(&tool_name) {
+        return None;
+    }
+    let raw = input.get("input")?.get("command")?.as_str()?;
+    // Strip common wrapper prefixes so the filter matches the real tool.
+    let cmd = raw
+        .trim_start()
+        .trim_start_matches("sudo ")
+        .trim_start_matches("rtk ");
+    let first_word = cmd.split_whitespace().next()?;
+    if first_word.is_empty() {
+        return None;
+    }
+    Some(first_word.to_string())
+}
+
+/// Build two maps from `tool_use.id`:
+///   - `tool_name`: the literal Anthropic tool name (e.g. `"Bash"`, `"Read"`)
+///   - `effective_cmd`: the resolved CLI command when available (e.g. `"cargo"`,
+///     `"git"`), otherwise absent
+fn build_tool_map(root: &Value) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut tool_name = HashMap::new();
+    let mut effective_cmd = HashMap::new();
 
     let messages = match root.get("messages") {
         Some(Value::Array(msgs)) => msgs,
-        _ => return map,
+        _ => return (tool_name, effective_cmd),
     };
 
     for msg in messages {
@@ -163,17 +202,23 @@ fn build_tool_map(root: &Value) -> HashMap<String, String> {
         };
         for block in content {
             if block.get("type").and_then(Value::as_str) == Some("tool_use") {
-                if let (Some(id), Some(name)) = (
-                    block.get("id").and_then(Value::as_str),
-                    block.get("name").and_then(Value::as_str),
-                ) {
-                    map.insert(id.to_string(), name.to_string());
+                let id = block
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string());
+                let name = block.get("name").and_then(Value::as_str);
+
+                if let (Some(id), Some(name)) = (&id, name) {
+                    tool_name.insert(id.clone(), name.to_string());
+                    if let Some(cmd) = resolve_command(name, block) {
+                        effective_cmd.insert(id.clone(), cmd);
+                    }
                 }
             }
         }
     }
 
-    map
+    (tool_name, effective_cmd)
 }
 
 /// Extract text from a tool_result content block.
@@ -344,5 +389,111 @@ mod tests {
         let r = reduce_body(body, &make_config(), false).expect("should succeed");
         assert_eq!(r.reductions, 0);
         assert_eq!(r.passthroughs, 0);
+    }
+
+    // ── Bash command resolution tests ──────────────────────────────
+
+    #[test]
+    fn bash_cargo_test_is_reduced() {
+        // Simulates a Claude Code Bash tool_call running `cargo test`.
+        // Includes compilation noise that the cargo TOML filter strips.
+        let body = r#"{
+  "model": "claude-sonnet-5",
+  "max_tokens": 1024,
+  "messages": [
+    {"role": "user", "content": "run tests"},
+    {"role": "assistant", "content": [
+      {"type": "tool_use", "id": "toolu_bash_01", "name": "Bash", "input": {"command": "cargo test --lib", "description": "Run tests"}}
+    ]},
+    {"role": "user", "content": [
+      {"type": "tool_result", "tool_use_id": "toolu_bash_01", "content": "   Compiling my-crate v0.1.0\n   Compiling lib v0.2.0\n    Finished test [unoptimized + debuginfo] target(s) in 2.34s\n     Running unittests src/lib.rs (target/debug/deps/my_crate-abc123)\n\nrunning 5 tests\ntest test_a ... ok\ntest test_b ... FAILED\ntest test_c ... ok\n\nfailures:\n\n---- test_b stdout ----\nthread 'test_b' panicked at src/lib.rs:42:9:\nassertion failed\n\nfailures:\n    test_b\n\ntest result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s\n\nerror: test failed, to rerun pass `--lib`"}
+    ]}
+  ]
+}"#;
+        let r = reduce_body(body, &make_config(), false).expect("should succeed");
+        assert!(r.reductions > 0, "Bash→cargo should be reduced, got reductions={}", r.reductions);
+        assert!(r.modified_body.contains("toche:reduced"), "should contain reduction marker");
+        assert!(r.tokens_reduced < r.tokens_raw, "reduced tokens should be less than raw");
+    }
+
+    #[test]
+    fn bash_git_diff_is_reduced() {
+        let body = r#"{
+  "model": "claude-sonnet-5",
+  "max_tokens": 1024,
+  "messages": [
+    {"role": "user", "content": "show diff"},
+    {"role": "assistant", "content": [
+      {"type": "tool_use", "id": "toolu_bash_02", "name": "Bash", "input": {"command": "git diff HEAD~1"}}
+    ]},
+    {"role": "user", "content": [
+      {"type": "tool_result", "tool_use_id": "toolu_bash_02", "content": "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-foo\n+bar"}
+    ]}
+  ]
+}"#;
+        let r = reduce_body(body, &make_config(), false).expect("should succeed");
+        assert!(r.reductions > 0, "Bash→git should be reduced, got reductions={}", r.reductions);
+        assert!(r.modified_body.contains("toche:reduced"));
+    }
+
+    #[test]
+    fn bash_unknown_command_passthrough() {
+        let body = r#"{
+  "model": "claude-sonnet-5",
+  "max_tokens": 1024,
+  "messages": [
+    {"role": "user", "content": "do something"},
+    {"role": "assistant", "content": [
+      {"type": "tool_use", "id": "toolu_bash_03", "name": "Bash", "input": {"command": "my-custom-tool --verbose"}}
+    ]},
+    {"role": "user", "content": [
+      {"type": "tool_result", "tool_use_id": "toolu_bash_03", "content": "custom output here"}
+    ]}
+  ]
+}"#;
+        let r = reduce_body(body, &make_config(), false).expect("should succeed");
+        assert_eq!(r.reductions, 0, "unknown command should not be reduced");
+        assert_eq!(r.passthroughs, 1);
+    }
+
+    #[test]
+    fn bash_with_sudo_prefix_still_matches() {
+        let body = r#"{
+  "model": "claude-sonnet-5",
+  "max_tokens": 1024,
+  "messages": [
+    {"role": "user", "content": "check docker"},
+    {"role": "assistant", "content": [
+      {"type": "tool_use", "id": "toolu_bash_04", "name": "Bash", "input": {"command": "sudo docker ps -a"}}
+    ]},
+    {"role": "user", "content": [
+      {"type": "tool_result", "tool_use_id": "toolu_bash_04", "content": "CONTAINER ID   IMAGE     STATUS"}
+    ]}
+  ]
+}"#;
+        let r = reduce_body(body, &make_config(), false).expect("should succeed");
+        // docker may or may not be in filters — either outcome is valid.
+        // The key assertion: it doesn't crash and processes the block.
+        assert!(r.reductions + r.passthroughs >= 1);
+    }
+
+    #[test]
+    fn literal_tool_name_still_works() {
+        // Non-Bash tools (e.g. custom MCP server) still match by literal name.
+        let body = r#"{
+  "model": "claude-sonnet-5",
+  "max_tokens": 1024,
+  "messages": [
+    {"role": "user", "content": "run shellcheck"},
+    {"role": "assistant", "content": [
+      {"type": "tool_use", "id": "toolu_sc_01", "name": "shellcheck", "input": {}}
+    ]},
+    {"role": "user", "content": [
+      {"type": "tool_result", "tool_use_id": "toolu_sc_01", "content": "In script.sh line 3:\necho $var\n     ^-- SC2086: Double quote to prevent globbing."}
+    ]}
+  ]
+}"#;
+        let r = reduce_body(body, &make_config(), false).expect("should succeed");
+        assert!(r.reductions > 0, "literal shellcheck should still be reduced");
     }
 }

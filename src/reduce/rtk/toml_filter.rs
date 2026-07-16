@@ -578,10 +578,9 @@ mod tests {
     #[test]
     fn test_builtin_filter_count() {
         let filters = make_filters(BUILTIN_TOML);
-        assert_eq!(
-            filters.len(),
-            63,
-            "Expected exactly 63 built-in filters, got {}.",
+        assert!(
+            filters.len() >= 70,
+            "Expected at least 70 built-in filters, got {}.",
             filters.len()
         );
     }

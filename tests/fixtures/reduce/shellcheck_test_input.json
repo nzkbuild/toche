@@ -1,0 +1,9 @@
+{
+  "model": "claude-sonnet-5",
+  "max_tokens": 50,
+  "messages": [
+    {"role": "user", "content": "run shellcheck on script.sh"},
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_002", "name": "shellcheck", "input": {}}]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_002", "content": "In script.sh line 3:\nif [[ $1 == \"\" ]]\n     ^-- SC2236: Use -n instead of ! -z.\n\nIn script.sh line 7:\necho $var\n     ^-- SC2086: Double quote to prevent globbing and word splitting.\n\nIn script.sh line 12:\ncat $file\n    ^-- SC2086: Double quote to prevent globbing and word splitting.\n\nIn script.sh line 20:\nrm -rf $dir\n       ^-- SC2115: Use \"${var:?}\" to ensure this never expands to /*."}]}
+  ]
+}

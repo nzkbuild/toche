@@ -25,3 +25,6 @@ Thumbs.db
 # Added by cargo
 
 /target
+
+# Build tool artifacts
+.akar/
