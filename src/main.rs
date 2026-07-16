@@ -26,7 +26,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Import existing Claude Code gateway configuration
-    Setup,
+    Setup {
+        /// Force overwrite of existing profiles.toml
+        #[arg(long)]
+        force: bool,
+    },
     /// Point Claude Code to Toche
     Connect { agent: Option<String> },
     /// Restore Claude Code to direct upstream
@@ -167,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Setup) => cli::setup::run().await,
+        Some(Commands::Setup { force }) => cli::setup::run(force).await,
         Some(Commands::Connect { agent }) => cli::connect::run(agent.as_deref()).await,
         Some(Commands::Disconnect { agent }) => cli::disconnect::run(agent.as_deref()).await,
         Some(Commands::Doctor) => cli::doctor::run().await,

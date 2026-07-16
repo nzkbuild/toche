@@ -44,6 +44,22 @@ pub fn retrieve(hash: &str) -> anyhow::Result<Vec<u8>> {
     fs::read(&path).with_context(|| format!("CAS blob not found: {}", hash))
 }
 
+/// Delete a blob by hash. Returns true if the file existed and was removed.
+pub fn delete(hash: &str) -> bool {
+    if hash.len() < 2 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+    let path = cas_dir().join(&hash[..2]).join(&hash[2..]);
+    match std::fs::remove_file(&path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            tracing::warn!("Failed to delete CAS blob {}: {e}", hash);
+            false
+        }
+    }
+}
+
 /// Check whether a blob exists for the given hash.
 pub fn exists(hash: &str) -> bool {
     if hash.len() < 2 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {

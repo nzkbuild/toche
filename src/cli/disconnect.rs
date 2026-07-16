@@ -18,12 +18,7 @@ async fn disconnect_claude() -> anyhow::Result<()> {
     // Verify current settings actually point to Toche before restoring
     if settings_path.exists() {
         let current = utils::read_jsonc(&settings_path).context("Failed to parse settings.json")?;
-        let points_to_toche = current
-            .get("baseURL")
-            .and_then(|v| v.as_str())
-            .map(|s| s.contains("127.0.0.1:8743"))
-            .unwrap_or(false);
-        if !points_to_toche {
+        if !super::connect::points_to_toche(&current) {
             println!("settings.json does not point to Toche. Nothing to disconnect.");
             return Ok(());
         }
@@ -35,11 +30,24 @@ async fn disconnect_claude() -> anyhow::Result<()> {
         std::fs::remove_file(&backup_path)?;
         println!("Restored previous Claude Code configuration.");
     } else {
-        // No backup — remove the baseURL field Toche added
+        // No backup — remove Toche URL entries
         let mut settings =
             utils::read_jsonc(&settings_path).context("Failed to parse settings.json")?;
         if let Some(obj) = settings.as_object_mut() {
             obj.remove("baseURL");
+        }
+        // Also clear env.ANTHROPIC_BASE_URL if pointed at Toche
+        if let Some(env_url) = settings
+            .pointer("/env/ANTHROPIC_BASE_URL")
+            .and_then(|v| v.as_str())
+        {
+            if env_url.contains("127.0.0.1:8743") {
+                if let Some(env) = settings.pointer_mut("/env") {
+                    if let Some(env_obj) = env.as_object_mut() {
+                        env_obj.remove("ANTHROPIC_BASE_URL");
+                    }
+                }
+            }
         }
         let content = serde_json::to_string_pretty(&settings)?;
         utils::atomic_write(&settings_path, &content)?;

@@ -5,11 +5,33 @@ use crate::config::utils::atomic_write_secure;
 use crate::profiles::loader::config_dir;
 use crate::profiles::types::{AuthMethod, Profile, Profiles};
 
-pub async fn run() -> anyhow::Result<()> {
+pub async fn run(force: bool) -> anyhow::Result<()> {
     info!("Starting Toche setup...");
 
     let dir = config_dir();
     std::fs::create_dir_all(&dir).context("Failed to create config directory")?;
+
+    let profiles_path = dir.join("profiles.toml");
+
+    // Guard against silently destroying existing user configuration.
+    if profiles_path.exists() && !force {
+        println!("profiles.toml already exists at {}", profiles_path.display());
+        println!();
+        println!("Running setup again would overwrite your custom profiles, API keys,");
+        println!("and model configuration. If you want to regenerate the default config,");
+        println!("use --force to overwrite (a backup will be created).");
+        return Ok(());
+    }
+
+    if profiles_path.exists() && force {
+        let bak_path = dir.join("profiles.toml.bak");
+        std::fs::copy(&profiles_path, &bak_path)
+            .context("Failed to backup existing profiles.toml")?;
+        println!(
+            "Existing profiles.toml backed up to {}",
+            bak_path.display()
+        );
+    }
 
     // Detect existing Claude Code gateway configuration
     let claude_settings = detect_claude_config()?;
@@ -38,13 +60,12 @@ pub async fn run() -> anyhow::Result<()> {
     };
 
     let toml_str = toml::to_string_pretty(&profiles).context("Failed to serialize profiles")?;
-    let path = dir.join("profiles.toml");
-    atomic_write_secure(&path, &toml_str)?;
+    atomic_write_secure(&profiles_path, &toml_str)?;
 
     println!(
         "Profile '{}' saved to {}",
         profiles.default.as_deref().unwrap_or("default"),
-        path.display()
+        profiles_path.display()
     );
     println!("Run `toche connect` to point Claude Code to Toche.");
 

@@ -21,34 +21,13 @@ use crate::shield;
 
 /// Parse the "model" field from an Anthropic Messages API JSON body.
 fn extract_model(body: &str) -> String {
-    let mut in_key = false;
-    let mut key_buf = String::new();
-
-    for ch in body.chars() {
-        if ch == '"' {
-            if in_key {
-                if key_buf == "model" {
-                    let after_key = body.split(&format!("\"{}\"", key_buf)).nth(1).unwrap_or("");
-                    let after_colon = after_key
-                        .trim_start()
-                        .strip_prefix(':')
-                        .unwrap_or(after_key);
-                    let value_start = after_colon.trim_start();
-                    if let Some(rest) = value_start.strip_prefix('"') {
-                        let end = rest.find('"').unwrap_or(rest.len());
-                        return rest[..end].to_string();
-                    }
-                }
-                key_buf.clear();
-                in_key = false;
-            } else {
-                in_key = true;
-            }
-        } else if in_key {
-            key_buf.push(ch);
-        }
-    }
-    "unknown".to_string()
+    // Fast path: for the common case of a top-level "model" key, use
+    // serde_json Value for structural correctness (handles escapes, nested
+    // objects, and the key appearing inside string values correctly).
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("model")?.as_str().map(String::from))
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Check whether a bypass header is set to "true" (case-insensitive).
@@ -592,5 +571,19 @@ mod tests {
     fn test_extract_model_date_suffix_preserved() {
         let body = r#"{"model":"claude-sonnet-5-20251001","messages":[]}"#;
         assert_eq!(extract_model(body), "claude-sonnet-5-20251001");
+    }
+
+    #[test]
+    fn test_extract_model_key_in_string_value_not_matched() {
+        // The word "model" appearing inside a message string must not be
+        // mistaken for the top-level "model" key.
+        let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":"which model to use"}]}"#;
+        assert_eq!(extract_model(body), "claude-sonnet-5");
+    }
+
+    #[test]
+    fn test_extract_model_with_escaped_quotes() {
+        let body = r#"{"model":"claude-sonnet-5","messages":[{"role":"user","content":"he said: \"which model?\""}]}"#;
+        assert_eq!(extract_model(body), "claude-sonnet-5");
     }
 }

@@ -180,18 +180,50 @@ impl CacheDb {
     }
 
     /// Delete entries older than the given TTL in days. Returns count removed.
+    /// Also removes orphaned CAS blob files.
     pub fn evict_expired(&self, ttl_days: u32) -> Result<u64> {
         let cutoff = Utc::now() - chrono::Duration::days(ttl_days as i64);
+        // Collect response_hash before deleting so we can clean CAS blobs
+        let hashes: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT response_hash FROM safe_cache WHERE created_at < ?1")?;
+            stmt.query_map(rusqlite::params![cutoff.to_rfc3339()], |row| {
+                row.get::<_, String>(0)
+            })?
+            .filter_map(|r| r.ok())
+            .collect()
+        };
         let n = self.conn.execute(
             "DELETE FROM safe_cache WHERE created_at < ?1",
             rusqlite::params![cutoff.to_rfc3339()],
         )?;
+        for hash in &hashes {
+            crate::reduce::storage::delete(hash);
+        }
         Ok(n as u64)
     }
 
     /// Delete entries, optionally filtered by project. Returns count removed.
-    /// Also cleans the cache_rejects table for the same scope.
+    /// Also cleans the cache_rejects table and CAS blob files for the same scope.
     pub fn clear(&self, project_path: Option<&str>) -> Result<u64> {
+        // Collect response_hash before deleting so we can clean CAS blobs
+        let hashes: Vec<String> = match project_path {
+            Some(p) => {
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT response_hash FROM safe_cache WHERE project_path = ?1")?;
+                stmt.query_map(rusqlite::params![p], |row| row.get::<_, String>(0))?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            }
+            None => {
+                let mut stmt = self.conn.prepare("SELECT response_hash FROM safe_cache")?;
+                stmt.query_map([], |row| row.get::<_, String>(0))?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            }
+        };
         let n = match project_path {
             Some(p) => {
                 let count = self.conn.execute(
@@ -210,6 +242,10 @@ impl CacheDb {
                 count
             }
         };
+        // Clean orphaned CAS blobs
+        for hash in &hashes {
+            crate::reduce::storage::delete(hash);
+        }
         Ok(n as u64)
     }
 
