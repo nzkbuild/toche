@@ -21,7 +21,7 @@ jobs:
     name: Validate tagged source
     runs-on: ubuntu-latest
     env:
-      TOCHE_CONFIG_DIR: ${{ runner.temp }}/toche-tests
+      TOCHE_CONFIG_DIR: ${{ github.workspace }}/.toche-tests
     steps:
       - name: Check out release commit
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
