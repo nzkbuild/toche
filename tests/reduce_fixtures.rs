@@ -11,8 +11,7 @@ fn make_config() -> ReduceConfig {
 
 fn load_fixture(name: &str) -> String {
     let path = format!("tests/fixtures/reduce/{name}.json");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("Failed to read fixture {path}: {e}"))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("Failed to read fixture {path}: {e}"))
 }
 
 #[test]
@@ -33,11 +32,20 @@ fn unsupported_command_passthrough() {
 fn shellcheck_output_reduced() {
     let body = load_fixture("tool_result_cargo_test");
     let r = transform::reduce_body(&body, &make_config(), false).expect("reduce should succeed");
-    assert!(r.reductions > 0, "shellcheck should match a filter and be reduced");
-    assert!(r.modified_body.contains("toche:reduced"), "should contain reduction marker");
+    assert!(
+        r.reductions > 0,
+        "shellcheck should match a filter and be reduced"
+    );
+    assert!(
+        r.modified_body.contains("toche:reduced"),
+        "should contain reduction marker"
+    );
 
     // Reduced output should retain the warning info but be shorter
-    assert!(r.tokens_reduced < r.tokens_raw, "reduced tokens should be less than raw");
+    assert!(
+        r.tokens_reduced < r.tokens_raw,
+        "reduced tokens should be less than raw"
+    );
     assert_eq!(r.hashes.len(), 1, "should have one stored hash");
     assert!(storage::exists(&r.hashes[0]), "hash should exist in CAS");
 }
@@ -47,7 +55,10 @@ fn deterministic_output() {
     let body = load_fixture("tool_result_cargo_test");
     let r1 = transform::reduce_body(&body, &make_config(), false).expect("first call");
     let r2 = transform::reduce_body(&body, &make_config(), false).expect("second call");
-    assert_eq!(r1.modified_body, r2.modified_body, "reduction must be deterministic");
+    assert_eq!(
+        r1.modified_body, r2.modified_body,
+        "reduction must be deterministic"
+    );
     assert_eq!(r1.reductions, r2.reductions);
     assert_eq!(r1.hashes, r2.hashes, "same content must produce same hash");
 }
@@ -64,7 +75,10 @@ fn raw_bytes_roundtrip() {
 fn bypass_header_disables_reduction() {
     let body = load_fixture("tool_result_cargo_test");
     let r = transform::reduce_body(&body, &make_config(), true).expect("reduce should succeed");
-    assert_eq!(r.reductions, 0, "bypass header should disable all reductions");
+    assert_eq!(
+        r.reductions, 0,
+        "bypass header should disable all reductions"
+    );
     assert_eq!(r.modified_body, body, "body should be unchanged");
 }
 
@@ -76,7 +90,10 @@ fn command_bypass_list_honored() {
     };
     let body = load_fixture("tool_result_cargo_test");
     let r = transform::reduce_body(&body, &cfg, false).expect("reduce should succeed");
-    assert_eq!(r.reductions, 0, "command in bypass list should not be reduced");
+    assert_eq!(
+        r.reductions, 0,
+        "command in bypass list should not be reduced"
+    );
     assert_eq!(r.passthroughs, 1, "should count as passthrough");
 }
 
@@ -84,7 +101,10 @@ fn command_bypass_list_honored() {
 fn invalid_json_passthrough() {
     let body = "this is not valid JSON at all!";
     let r = transform::reduce_body(body, &make_config(), false).expect("should not error");
-    assert_eq!(r.modified_body, body, "invalid JSON must pass through unchanged");
+    assert_eq!(
+        r.modified_body, body,
+        "invalid JSON must pass through unchanged"
+    );
     assert_eq!(r.reductions, 0);
     assert_eq!(r.passthroughs, 0);
 }
@@ -94,12 +114,21 @@ fn reduction_marker_present() {
     let body = load_fixture("tool_result_cargo_test");
     let r = transform::reduce_body(&body, &make_config(), false).expect("reduce should succeed");
     assert!(r.reductions > 0, "should have at least one reduction");
-    assert!(r.modified_body.contains("[toche:reduced"), "marker must be present");
-    assert!(r.modified_body.contains("restored with: toche expand"), "marker must contain expand hint");
+    assert!(
+        r.modified_body.contains("[toche:reduced"),
+        "marker must be present"
+    );
+    assert!(
+        r.modified_body.contains("restored with: toche expand"),
+        "marker must contain expand hint"
+    );
 
     // Hash in marker should be valid and exist in CAS
     for hash in &r.hashes {
-        assert!(storage::exists(hash), "hash {hash} from marker should exist in CAS");
+        assert!(
+            storage::exists(hash),
+            "hash {hash} from marker should exist in CAS"
+        );
         let len = hash.len();
         assert_eq!(len, 64, "SHA-256 hex digest must be 64 chars, got {len}");
     }
@@ -109,6 +138,12 @@ fn reduction_marker_present() {
 fn biome_output_reduced() {
     let body = load_fixture("tool_result_git_diff");
     let r = transform::reduce_body(&body, &make_config(), false).expect("reduce should succeed");
-    assert!(r.reductions > 0, "biome should match a filter and be reduced");
-    assert!(r.modified_body.contains("toche:reduced"), "should contain reduction marker");
+    assert!(
+        r.reductions > 0,
+        "biome should match a filter and be reduced"
+    );
+    assert!(
+        r.modified_body.contains("toche:reduced"),
+        "should contain reduction marker"
+    );
 }

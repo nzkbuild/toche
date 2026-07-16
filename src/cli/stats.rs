@@ -35,7 +35,10 @@ pub async fn run(json: bool, entries: u32) -> anyhow::Result<()> {
         println!("Coalesced requests:  {}", t.coalesced_count);
         println!("Local cache hits:    {}", t.local_cache_hit_count);
         if t.invalidated_cache_candidates > 0 {
-            println!("Cache candidates rejected: {}", t.invalidated_cache_candidates);
+            println!(
+                "Cache candidates rejected: {}",
+                t.invalidated_cache_candidates
+            );
         }
         if t.local_hit_tokens_saved > 0 {
             println!("Tokens saved (local hits): {}", t.local_hit_tokens_saved);

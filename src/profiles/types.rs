@@ -96,14 +96,9 @@ pub struct Profile {
 #[serde(tag = "type")]
 pub enum AuthMethod {
     #[serde(rename = "api_key")]
-    ApiKey {
-        header_name: String,
-        key: String,
-    },
+    ApiKey { header_name: String, key: String },
     #[serde(rename = "bearer")]
-    BearerToken {
-        token: String,
-    },
+    BearerToken { token: String },
     #[serde(rename = "none")]
     None,
 }

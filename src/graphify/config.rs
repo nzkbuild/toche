@@ -49,10 +49,8 @@ mod tests {
 
     #[test]
     fn deserialize_with_path() {
-        let cfg: GraphifyConfig = toml::from_str(
-            "enabled = true\ngraph_path = \"/custom/graph.json\"",
-        )
-        .unwrap();
+        let cfg: GraphifyConfig =
+            toml::from_str("enabled = true\ngraph_path = \"/custom/graph.json\"").unwrap();
         assert!(cfg.enabled);
         assert_eq!(cfg.graph_path, Some("/custom/graph.json".into()));
     }

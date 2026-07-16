@@ -70,7 +70,7 @@ impl CacheDb {
             )
             .unwrap_or(0);
 
-        const EXPECTED_VERSION: i32 = 8;
+        const EXPECTED_VERSION: i32 = 9;
 
         if current_version > EXPECTED_VERSION {
             anyhow::bail!(
@@ -112,20 +112,13 @@ impl CacheDb {
                 )",
                 [],
             )?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (8)",
-                [],
-            )?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (8)", [])?;
         }
 
         Ok(Self { conn })
     }
 
-    pub fn lookup(
-        &self,
-        project_path: &str,
-        fingerprint: &str,
-    ) -> Result<Option<CacheEntry>> {
+    pub fn lookup(&self, project_path: &str, fingerprint: &str) -> Result<Option<CacheEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_path, fingerprint, workspace_fingerprint,
                     response_hash, model, status, tokens_input, tokens_output,
@@ -133,25 +126,22 @@ impl CacheDb {
              FROM safe_cache
              WHERE project_path = ?1 AND fingerprint = ?2",
         )?;
-        let mut rows = stmt.query_map(
-            rusqlite::params![project_path, fingerprint],
-            |row| {
-                Ok(CacheEntry {
-                    id: row.get(0)?,
-                    project_path: row.get(1)?,
-                    fingerprint: row.get(2)?,
-                    workspace_fingerprint: row.get(3)?,
-                    response_hash: row.get(4)?,
-                    model: row.get(5)?,
-                    status: row.get(6)?,
-                    tokens_input: row.get(7)?,
-                    tokens_output: row.get(8)?,
-                    created_at: row.get(9)?,
-                    last_hit_at: row.get(10)?,
-                    hit_count: row.get(11)?,
-                })
-            },
-        )?;
+        let mut rows = stmt.query_map(rusqlite::params![project_path, fingerprint], |row| {
+            Ok(CacheEntry {
+                id: row.get(0)?,
+                project_path: row.get(1)?,
+                fingerprint: row.get(2)?,
+                workspace_fingerprint: row.get(3)?,
+                response_hash: row.get(4)?,
+                model: row.get(5)?,
+                status: row.get(6)?,
+                tokens_input: row.get(7)?,
+                tokens_output: row.get(8)?,
+                created_at: row.get(9)?,
+                last_hit_at: row.get(10)?,
+                hit_count: row.get(11)?,
+            })
+        })?;
         Ok(rows.next().transpose()?)
     }
 
@@ -200,23 +190,31 @@ impl CacheDb {
     }
 
     /// Delete entries, optionally filtered by project. Returns count removed.
+    /// Also cleans the cache_rejects table for the same scope.
     pub fn clear(&self, project_path: Option<&str>) -> Result<u64> {
         let n = match project_path {
-            Some(p) => self.conn.execute(
-                "DELETE FROM safe_cache WHERE project_path = ?1",
-                rusqlite::params![p],
-            )?,
-            None => self.conn.execute("DELETE FROM safe_cache", [])?,
+            Some(p) => {
+                let count = self.conn.execute(
+                    "DELETE FROM safe_cache WHERE project_path = ?1",
+                    rusqlite::params![p],
+                )?;
+                let _ = self.conn.execute(
+                    "DELETE FROM cache_rejects WHERE project_path = ?1",
+                    rusqlite::params![p],
+                )?;
+                count
+            }
+            None => {
+                let count = self.conn.execute("DELETE FROM safe_cache", [])?;
+                let _ = self.conn.execute("DELETE FROM cache_rejects", [])?;
+                count
+            }
         };
         Ok(n as u64)
     }
 
     /// List recent cache entries, optionally filtered by project.
-    pub fn list(
-        &self,
-        project_path: Option<&str>,
-        limit: u32,
-    ) -> Result<Vec<CacheEntry>> {
+    pub fn list(&self, project_path: Option<&str>, limit: u32) -> Result<Vec<CacheEntry>> {
         let rows = match project_path {
             Some(p) => {
                 let mut stmt = self.conn.prepare(
@@ -242,7 +240,8 @@ impl CacheDb {
                         last_hit_at: row.get(10)?,
                         hit_count: row.get(11)?,
                     })
-                })?.collect::<Result<Vec<_>, _>>()?
+                })?
+                .collect::<Result<Vec<_>, _>>()?
             }
             None => {
                 let mut stmt = self.conn.prepare(
@@ -267,7 +266,8 @@ impl CacheDb {
                         last_hit_at: row.get(10)?,
                         hit_count: row.get(11)?,
                     })
-                })?.collect::<Result<Vec<_>, _>>()?
+                })?
+                .collect::<Result<Vec<_>, _>>()?
             }
         };
         Ok(rows)
@@ -292,11 +292,9 @@ impl CacheDb {
                 rusqlite::params![p],
                 |row| row.get(0),
             )?,
-            None => self.conn.query_row(
-                "SELECT COUNT(*) FROM cache_rejects",
-                [],
-                |row| row.get(0),
-            )?,
+            None => self
+                .conn
+                .query_row("SELECT COUNT(*) FROM cache_rejects", [], |row| row.get(0))?,
         };
         Ok(count as u64)
     }
@@ -319,11 +317,9 @@ impl CacheDb {
                 rusqlite::params![p],
                 |row| row.get(0),
             )?,
-            None => self.conn.query_row(
-                "SELECT COUNT(*) FROM safe_cache",
-                [],
-                |row| row.get(0),
-            )?,
+            None => self
+                .conn
+                .query_row("SELECT COUNT(*) FROM safe_cache", [], |row| row.get(0))?,
         };
         Ok(count as u64)
     }

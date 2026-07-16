@@ -187,7 +187,11 @@ mod tests {
     fn text_only_response_is_safe() {
         let body = r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"Hello!"}],"stop_reason":"end_turn"}"#;
         let verdict = inspect_response(body.as_bytes());
-        assert!(verdict.safe, "text-only response should be safe, got: {}", verdict.reason);
+        assert!(
+            verdict.safe,
+            "text-only response should be safe, got: {}",
+            verdict.reason
+        );
     }
 
     #[test]
@@ -241,7 +245,11 @@ event: message_stop
 data: {\"type\":\"message_stop\"}
 ";
         let verdict = inspect_response(sse.as_bytes());
-        assert!(verdict.safe, "text-only SSE should be safe, got: {}", verdict.reason);
+        assert!(
+            verdict.safe,
+            "text-only SSE should be safe, got: {}",
+            verdict.reason
+        );
     }
 
     #[test]

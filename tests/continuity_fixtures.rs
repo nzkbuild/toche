@@ -23,10 +23,7 @@ fn save_and_show_checkpoint() {
 
     assert!(id > 0);
 
-    let latest = db
-        .latest("/test/project")
-        .unwrap()
-        .expect("should exist");
+    let latest = db.latest("/test/project").unwrap().expect("should exist");
     assert_eq!(latest.task, "Implement session continuity");
     assert_eq!(latest.completed, "DB schema\nCLI scaffold");
     assert_eq!(latest.next_action, "Wire observer into gateway");

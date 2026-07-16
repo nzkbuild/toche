@@ -46,7 +46,11 @@ pub async fn run() -> anyhow::Result<()> {
                 let points_to_toche = base_url.contains("127.0.0.1:8743");
                 println!(
                     "  baseURL: {base_url} {}",
-                    if points_to_toche { "(points to Toche)" } else { "" }
+                    if points_to_toche {
+                        "(points to Toche)"
+                    } else {
+                        ""
+                    }
                 );
             }
             Err(e) => {

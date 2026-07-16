@@ -166,7 +166,10 @@ impl TomlFilterRegistry {
         for (name, def) in file.filters {
             match compile_filter(name.clone(), def) {
                 Ok(f) => compiled.push(f),
-                Err(e) => eprintln!("[toche:reduce] warning: filter '{}' in {}: {}", name, source, e),
+                Err(e) => eprintln!(
+                    "[toche:reduce] warning: filter '{}' in {}: {}",
+                    name, source, e
+                ),
             }
         }
         Ok(compiled)
@@ -176,13 +179,55 @@ impl TomlFilterRegistry {
 /// Commands already handled by dedicated Rust modules (not relevant for Toche
 /// since we only use the TOML engine, but kept for filter validation warnings).
 const RUST_HANDLED_COMMANDS: &[&str] = &[
-    "ls", "tree", "read", "smart", "git", "gh", "aws", "psql", "pnpm",
-    "err", "test", "json", "deps", "env", "find", "diff", "log", "docker",
-    "kubectl", "summary", "grep", "init", "wget", "wc", "gain", "config",
-    "vitest", "prisma", "tsc", "next", "lint", "prettier", "format",
-    "playwright", "cargo", "npm", "npx", "curl", "discover", "ruff",
-    "pytest", "mypy", "pip", "go", "golangci-lint", "rewrite", "proxy",
-    "verify", "learn",
+    "ls",
+    "tree",
+    "read",
+    "smart",
+    "git",
+    "gh",
+    "aws",
+    "psql",
+    "pnpm",
+    "err",
+    "test",
+    "json",
+    "deps",
+    "env",
+    "find",
+    "diff",
+    "log",
+    "docker",
+    "kubectl",
+    "summary",
+    "grep",
+    "init",
+    "wget",
+    "wc",
+    "gain",
+    "config",
+    "vitest",
+    "prisma",
+    "tsc",
+    "next",
+    "lint",
+    "prettier",
+    "format",
+    "playwright",
+    "cargo",
+    "npm",
+    "npx",
+    "curl",
+    "discover",
+    "ruff",
+    "pytest",
+    "mypy",
+    "pip",
+    "go",
+    "golangci-lint",
+    "rewrite",
+    "proxy",
+    "verify",
+    "learn",
 ];
 
 pub fn is_rtk_reserved_command(name: &str) -> bool {
@@ -215,7 +260,10 @@ fn compile_filter(name: String, def: TomlFilterDef) -> Result<CompiledFilter, St
         .map(|r| {
             let pat = r.pattern.clone();
             Regex::new(&r.pattern)
-                .map(|pattern| CompiledReplaceRule { pattern, replacement: r.replacement })
+                .map(|pattern| CompiledReplaceRule {
+                    pattern,
+                    replacement: r.replacement,
+                })
                 .map_err(|e| format!("invalid replace pattern '{}': {}", pat, e))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -230,10 +278,16 @@ fn compile_filter(name: String, def: TomlFilterDef) -> Result<CompiledFilter, St
             let unless = r
                 .unless
                 .as_deref()
-                .map(|u| Regex::new(u)
-                    .map_err(|e| format!("invalid match_output unless pattern '{}': {}", u, e)))
+                .map(|u| {
+                    Regex::new(u)
+                        .map_err(|e| format!("invalid match_output unless pattern '{}': {}", u, e))
+                })
                 .transpose()?;
-            Ok(CompiledMatchOutputRule { pattern, message: r.message, unless })
+            Ok(CompiledMatchOutputRule {
+                pattern,
+                message: r.message,
+                unless,
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -492,7 +546,10 @@ mod tests {
     }
 
     fn first_filter(toml: &str) -> CompiledFilter {
-        make_filters(toml).into_iter().next().expect("expected at least one filter")
+        make_filters(toml)
+            .into_iter()
+            .next()
+            .expect("expected at least one filter")
     }
 
     #[test]
@@ -510,7 +567,11 @@ mod tests {
     fn test_builtin_filters_compile() {
         let builtin = BUILTIN_TOML;
         let result = TomlFilterRegistry::parse_and_compile(builtin, "builtin");
-        assert!(result.is_ok(), "builtin filters failed to compile: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "builtin filters failed to compile: {:?}",
+            result
+        );
         assert!(!result.unwrap().is_empty());
     }
 
@@ -617,7 +678,8 @@ max_lines = 4
 on_empty = "empty"
 "#,
         );
-        let input = "\x1b[31mred line\x1b[0m\nnoise skip\nkeep one\nkeep two\nkeep three\nkeep four";
+        let input =
+            "\x1b[31mred line\x1b[0m\nnoise skip\nkeep one\nkeep two\nkeep three\nkeep four";
         let out = apply_filter(&f, input);
         assert!(out.contains("red line"));
         assert!(!out.contains("noise skip"));
@@ -688,7 +750,10 @@ strip_lines_matching = ["^noise"]
         let (out, loss) = apply_filter_with_info(&first_filter(toml), "a\nb\nc\nd\ne");
         assert!(out.starts_with("a\nb\n"));
         match loss {
-            Lossiness::Tail { tee_payload, tail_offset } => {
+            Lossiness::Tail {
+                tee_payload,
+                tail_offset,
+            } => {
                 assert_eq!(tail_offset, 3);
                 let recovered: Vec<&str> = tee_payload.lines().skip(tail_offset - 1).collect();
                 assert_eq!(recovered, vec!["c", "d", "e"]);

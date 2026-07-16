@@ -49,7 +49,11 @@ fn double_connect_detects_already_connected() {
 
     // Write settings that already point to Toche
     let settings = serde_json::json!({"baseURL": "http://127.0.0.1:8743"});
-    std::fs::write(&settings_path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+    std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).unwrap(),
+    )
+    .unwrap();
 
     // Simulate double-connect check
     let raw = std::fs::read_to_string(&settings_path).unwrap();
@@ -77,7 +81,10 @@ fn disconnect_verifies_before_restore() {
     // Setup: settings point to Toche, backup has original
     std::fs::write(
         &settings_path,
-        serde_json::to_string_pretty(&serde_json::json!({"baseURL": "http://127.0.0.1:8743", "other": "value"})).unwrap(),
+        serde_json::to_string_pretty(
+            &serde_json::json!({"baseURL": "http://127.0.0.1:8743", "other": "value"}),
+        )
+        .unwrap(),
     )
     .unwrap();
     std::fs::write(

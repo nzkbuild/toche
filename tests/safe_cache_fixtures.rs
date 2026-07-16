@@ -72,9 +72,14 @@ fn workspace_fingerprint_mismatch_blocks_replay() {
     })
     .unwrap();
 
-    let entry = db.lookup(project, &fingerprint).unwrap().expect("should exist");
-    assert_ne!(entry.workspace_fingerprint, current_ws,
-        "stored fingerprint should differ from current workspace fingerprint");
+    let entry = db
+        .lookup(project, &fingerprint)
+        .unwrap()
+        .expect("should exist");
+    assert_ne!(
+        entry.workspace_fingerprint, current_ws,
+        "stored fingerprint should differ from current workspace fingerprint"
+    );
 }
 
 #[test]
@@ -109,14 +114,8 @@ fn different_fingerprints_different_entries() {
     })
     .unwrap();
 
-    let a = db
-        .lookup("project", &fp_model_a)
-        .unwrap()
-        .expect("exists");
-    let b = db
-        .lookup("project", &fp_model_b)
-        .unwrap()
-        .expect("exists");
+    let a = db.lookup("project", &fp_model_a).unwrap().expect("exists");
+    let b = db.lookup("project", &fp_model_b).unwrap().expect("exists");
     assert_eq!(a.model, "claude-sonnet-5");
     assert_eq!(b.model, "claude-opus-4-8");
     assert_ne!(a.fingerprint, b.fingerprint);

@@ -143,9 +143,7 @@ fn strip_date_suffix(model: &str) -> &str {
     if model.len() > MODEL_DATE_SUFFIX_DIGITS + 1 {
         let prefix_len = model.len() - MODEL_DATE_SUFFIX_DIGITS - 1;
         if model.as_bytes()[prefix_len] == b'-'
-            && model[prefix_len + 1..]
-                .bytes()
-                .all(|b| b.is_ascii_digit())
+            && model[prefix_len + 1..].bytes().all(|b| b.is_ascii_digit())
         {
             return &model[..prefix_len];
         }

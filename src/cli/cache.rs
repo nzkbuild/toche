@@ -31,8 +31,8 @@ pub async fn run_inspect(json: bool, entries: u32) -> anyhow::Result<()> {
                 })
             })
             .collect();
-        let json_str = serde_json::to_string_pretty(&output)
-            .context("Failed to serialize cache entries")?;
+        let json_str =
+            serde_json::to_string_pretty(&output).context("Failed to serialize cache entries")?;
         println!("{json_str}");
     } else {
         if list.is_empty() {
@@ -118,7 +118,10 @@ pub async fn run_why(fingerprint: &str) -> anyhow::Result<()> {
             println!("  Fingerprint:    {}", entry.fingerprint);
             println!("  Model:          {}", entry.model);
             println!("  Status:         {}", entry.status);
-            println!("  Tokens:         {} in / {} out", entry.tokens_input, entry.tokens_output);
+            println!(
+                "  Tokens:         {} in / {} out",
+                entry.tokens_input, entry.tokens_output
+            );
             println!("  Response hash:  {}", entry.response_hash);
             println!("  Created:        {}", entry.created_at);
             println!("  Last hit:       {}", entry.last_hit_at);
@@ -127,7 +130,9 @@ pub async fn run_why(fingerprint: &str) -> anyhow::Result<()> {
             let current_ws = safe_cache::workspace::compute_workspace_fingerprint();
             if current_ws != entry.workspace_fingerprint {
                 println!();
-                println!("  Workspace fingerprint MISMATCH — workspace changed since entry was cached.");
+                println!(
+                    "  Workspace fingerprint MISMATCH — workspace changed since entry was cached."
+                );
                 println!("    Cached:   {}", entry.workspace_fingerprint);
                 println!("    Current:  {}", current_ws);
             } else {
@@ -142,7 +147,10 @@ pub async fn run_why(fingerprint: &str) -> anyhow::Result<()> {
             }
         }
         Ok(None) => {
-            println!("No cache entry found for fingerprint '{}' in project '{}'.", fingerprint, project);
+            println!(
+                "No cache entry found for fingerprint '{}' in project '{}'.",
+                fingerprint, project
+            );
         }
         Err(e) => {
             anyhow::bail!("Failed to query cache: {e}");

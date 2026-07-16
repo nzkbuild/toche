@@ -4,7 +4,9 @@ use anyhow::Result;
 use chrono::Utc;
 use rusqlite::Connection;
 
-use crate::meter::types::{DayBreakdown, LedgerEntry, ModelBreakdown, StatsSummary, UsageBreakdown};
+use crate::meter::types::{
+    DayBreakdown, LedgerEntry, ModelBreakdown, StatsSummary, UsageBreakdown,
+};
 
 /// Represents a request ready to be inserted into the ledger.
 pub struct NewLedgerRecord {
@@ -64,7 +66,7 @@ impl LedgerDb {
             )
             .unwrap_or(0);
 
-        const EXPECTED_VERSION: i32 = 8;
+        const EXPECTED_VERSION: i32 = 9;
 
         if current_version > EXPECTED_VERSION {
             anyhow::bail!(
@@ -94,10 +96,7 @@ impl LedgerDb {
                 )",
                 [],
             )?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (1)",
-                [],
-            )?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (1)", [])?;
         }
 
         // Versions 2–7: column additions over time (applied only for DBs that
@@ -107,60 +106,42 @@ impl LedgerDb {
                 "ALTER TABLE ledger ADD COLUMN coalesced_count INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (2)",
-                [],
-            )?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (2)", [])?;
         }
         if current_version < 3 {
             conn.execute(
                 "ALTER TABLE ledger ADD COLUMN reduction_input_tokens INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (3)",
-                [],
-            )?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (3)", [])?;
         }
         if current_version < 4 {
             conn.execute(
                 "ALTER TABLE ledger ADD COLUMN reduction_output_tokens INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (4)",
-                [],
-            )?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (4)", [])?;
         }
         if current_version < 5 {
             conn.execute(
                 "ALTER TABLE ledger ADD COLUMN reduction_count INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (5)",
-                [],
-            )?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (5)", [])?;
         }
         if current_version < 6 {
             conn.execute(
                 "ALTER TABLE ledger ADD COLUMN efficiency_mode TEXT NOT NULL DEFAULT ''",
                 [],
             )?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (6)",
-                [],
-            )?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (6)", [])?;
         }
         if current_version < 7 {
             conn.execute(
                 "ALTER TABLE ledger ADD COLUMN local_cache_hit INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (7)",
-                [],
-            )?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (7)", [])?;
         }
 
         // Indexes (safe to recreate)
@@ -309,12 +290,24 @@ impl LedgerDb {
 
         // Query cache_rejects for invalidated count
         let rejected_sql = match &exact {
-            Some(_) => "SELECT COUNT(*) FROM cache_rejects WHERE project_path = ?1 OR project_path GLOB ?2",
+            Some(_) => {
+                "SELECT COUNT(*) FROM cache_rejects WHERE project_path = ?1 OR project_path GLOB ?2"
+            }
             None => "SELECT COUNT(*) FROM cache_rejects",
         };
         let rejected: i64 = match &exact {
-            Some(_) => self.conn.query_row(rejected_sql, rusqlite::params![exact, glob], |row| row.get(0)).unwrap_or(0),
-            None => self.conn.query_row(rejected_sql, [], |row| row.get(0)).unwrap_or(0),
+            Some(_) => self
+                .conn
+                .query_row(rejected_sql, rusqlite::params![exact, glob], |row| {
+                    row.get(0)
+                })
+                .map_err(|e| tracing::warn!("Failed to query cache_rejects: {e}"))
+                .unwrap_or(0),
+            None => self
+                .conn
+                .query_row(rejected_sql, [], |row| row.get(0))
+                .map_err(|e| tracing::warn!("Failed to query cache_rejects: {e}"))
+                .unwrap_or(0),
         };
         total.invalidated_cache_candidates = rejected as u64;
 
@@ -332,7 +325,10 @@ impl LedgerDb {
                 .into_iter()
                 .map(|model| -> Result<ModelBreakdown> {
                     let b = self.build_breakdown(&model, &exact, &glob)?;
-                    Ok(ModelBreakdown { model, breakdown: b })
+                    Ok(ModelBreakdown {
+                        model,
+                        breakdown: b,
+                    })
                 })
                 .collect::<Result<Vec<_>>>()?
         };
@@ -410,35 +406,32 @@ impl LedgerDb {
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
              ORDER BY timestamp DESC LIMIT ?3",
         )?;
-        let rows = stmt.query_map(
-            rusqlite::params![exact, glob, limit as i64],
-            |row| {
-                let ts: String = row.get(1)?;
-                let parsed = chrono::DateTime::parse_from_rfc3339(&ts)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now());
-                Ok(LedgerEntry {
-                    id: row.get(0)?,
-                    timestamp: parsed,
-                    model: row.get(2)?,
-                    profile_name: row.get(3)?,
-                    input_tokens: row.get::<_, i64>(4)? as u64,
-                    output_tokens: row.get::<_, i64>(5)? as u64,
-                    cache_read_input_tokens: row.get::<_, i64>(6)? as u64,
-                    cache_creation_input_tokens: row.get::<_, i64>(7)? as u64,
-                    coalesced_count: row.get::<_, i64>(8)? as u64,
-                    latency_ms: row.get::<_, i64>(9)? as u64,
-                    status: row.get(10)?,
-                    cost: row.get(11)?,
-                    project_path: row.get(12)?,
-                    reduction_input_tokens: row.get::<_, i64>(13)? as u64,
-                    reduction_output_tokens: row.get::<_, i64>(14)? as u64,
-                    reduction_count: row.get::<_, i64>(15)? as u64,
-                    efficiency_mode: row.get(16)?,
-                    local_cache_hit: row.get::<_, i64>(17)? != 0,
-                })
-            },
-        )?;
+        let rows = stmt.query_map(rusqlite::params![exact, glob, limit as i64], |row| {
+            let ts: String = row.get(1)?;
+            let parsed = chrono::DateTime::parse_from_rfc3339(&ts)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(LedgerEntry {
+                id: row.get(0)?,
+                timestamp: parsed,
+                model: row.get(2)?,
+                profile_name: row.get(3)?,
+                input_tokens: row.get::<_, i64>(4)? as u64,
+                output_tokens: row.get::<_, i64>(5)? as u64,
+                cache_read_input_tokens: row.get::<_, i64>(6)? as u64,
+                cache_creation_input_tokens: row.get::<_, i64>(7)? as u64,
+                coalesced_count: row.get::<_, i64>(8)? as u64,
+                latency_ms: row.get::<_, i64>(9)? as u64,
+                status: row.get(10)?,
+                cost: row.get(11)?,
+                project_path: row.get(12)?,
+                reduction_input_tokens: row.get::<_, i64>(13)? as u64,
+                reduction_output_tokens: row.get::<_, i64>(14)? as u64,
+                reduction_count: row.get::<_, i64>(15)? as u64,
+                efficiency_mode: row.get(16)?,
+                local_cache_hit: row.get::<_, i64>(17)? != 0,
+            })
+        })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 }

@@ -108,10 +108,7 @@ impl CheckpointDb {
                 )",
                 [],
             )?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (9)",
-                [],
-            )?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (9)", [])?;
         }
 
         Ok(Self { conn })
@@ -189,9 +186,10 @@ impl CheckpointDb {
     }
 
     pub fn delete(&self, id: i64) -> Result<bool> {
-        let n = self
-            .conn
-            .execute("DELETE FROM checkpoints WHERE id = ?1", rusqlite::params![id])?;
+        let n = self.conn.execute(
+            "DELETE FROM checkpoints WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
         Ok(n > 0)
     }
 }

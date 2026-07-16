@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::breakpoint::BreakpointPlan;
 
@@ -64,16 +64,19 @@ mod tests {
         }"#;
         let plan = find_breakpoints(body, &CacheBreakpoint::Standard).unwrap();
         let modified = inject_cache_control(body, &plan).unwrap();
-        assert!(modified.contains("cache_control"), "Modified body must contain cache_control");
+        assert!(
+            modified.contains("cache_control"),
+            "Modified body must contain cache_control"
+        );
         assert_ne!(modified, body, "Modified body must differ from original");
 
         let parsed: Value = serde_json::from_str(&modified).unwrap();
         let system_last = &parsed["system"][0].as_object().unwrap();
-        assert!(system_last.contains_key("cache_control"), "System block must have cache_control");
-        assert_eq!(
-            system_last["cache_control"]["type"],
-            "ephemeral"
+        assert!(
+            system_last.contains_key("cache_control"),
+            "System block must have cache_control"
         );
+        assert_eq!(system_last["cache_control"]["type"], "ephemeral");
     }
 
     #[test]
@@ -104,10 +107,7 @@ mod tests {
         assert_eq!(parsed["model"], "claude-sonnet-5");
         assert_eq!(parsed["max_tokens"], 1024);
         assert_eq!(parsed["temperature"], json!(0.7));
-        assert_eq!(
-            parsed["messages"][0]["content"][0]["text"],
-            "Hello"
-        );
+        assert_eq!(parsed["messages"][0]["content"][0]["text"], "Hello");
     }
 
     #[test]

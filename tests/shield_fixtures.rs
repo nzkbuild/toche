@@ -11,8 +11,7 @@ fn fingerprint_deterministic() {
 
 #[test]
 fn cache_control_does_not_change_fingerprint() {
-    let without =
-        r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}]}"#;
+    let without = r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}]}"#;
     let with = r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":[{"type":"text","text":"Hello","cache_control":{"type":"ephemeral"}}]}]}"#;
     assert_eq!(
         shield::fingerprint::compute(without),
@@ -22,8 +21,7 @@ fn cache_control_does_not_change_fingerprint() {
 
 #[test]
 fn different_models_different_fingerprints() {
-    let body_a =
-        r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}"#;
+    let body_a = r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}"#;
     let body_b = r#"{"model":"claude-opus-4.8","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}"#;
     assert_ne!(
         shield::fingerprint::compute(body_a),

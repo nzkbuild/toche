@@ -32,16 +32,10 @@ pub async fn run_save(
     let entry = NewCheckpoint {
         project_path: project_path.clone(),
         task: task.unwrap_or_default(),
-        completed: completed
-            .unwrap_or_default()
-            .join("\n"),
-        changed_files: changed_files
-            .unwrap_or_default()
-            .join("\n"),
+        completed: completed.unwrap_or_default().join("\n"),
+        changed_files: changed_files.unwrap_or_default().join("\n"),
         verification: verification.unwrap_or_default(),
-        open_risks: open_risks
-            .unwrap_or_default()
-            .join("\n"),
+        open_risks: open_risks.unwrap_or_default().join("\n"),
         next_action: next.unwrap_or_default(),
         facts_json,
         model_assisted,
@@ -67,9 +61,9 @@ pub async fn run_show(id: Option<i64>, json: bool) -> anyhow::Result<()> {
         Some(id) => db
             .get(id)?
             .with_context(|| format!("Checkpoint #{id} not found"))?,
-        None => db
-            .latest(&project_path)?
-            .context("No checkpoints saved yet for this project. Use 'toche checkpoint save' to create one.")?,
+        None => db.latest(&project_path)?.context(
+            "No checkpoints saved yet for this project. Use 'toche checkpoint save' to create one.",
+        )?,
     };
 
     if json {
@@ -100,15 +94,17 @@ pub async fn run_show(id: Option<i64>, json: bool) -> anyhow::Result<()> {
     let current_git = current_git_head();
     let current_ws = workspace::compute_workspace_fingerprint();
 
-    let git_match = current_git == entry.git_head
-        || entry.git_head.is_empty()
-        || current_git.is_empty();
+    let git_match =
+        current_git == entry.git_head || entry.git_head.is_empty() || current_git.is_empty();
     let ws_match = current_ws == entry.workspace_fingerprint;
 
     println!("Checkpoint #{}", entry.id);
     println!("  Project:        {}", entry.project_path);
     println!("  Created:        {}", entry.created_at);
-    println!("  Model-assisted:  {}", if entry.model_assisted { "yes" } else { "no" });
+    println!(
+        "  Model-assisted:  {}",
+        if entry.model_assisted { "yes" } else { "no" }
+    );
     println!();
 
     println!("Stale detection:");
@@ -116,11 +112,17 @@ pub async fn run_show(id: Option<i64>, json: bool) -> anyhow::Result<()> {
         if entry.git_head.is_empty() {
             println!("  Git HEAD:       (no git data)");
         } else {
-            println!("  Git HEAD:       MATCH ({})", &entry.git_head[..8.min(entry.git_head.len())]);
+            println!(
+                "  Git HEAD:       MATCH ({})",
+                &entry.git_head[..8.min(entry.git_head.len())]
+            );
         }
     } else {
         println!("  Git HEAD:       MISMATCH");
-        println!("    Cached:   {}", &entry.git_head[..8.min(entry.git_head.len())]);
+        println!(
+            "    Cached:   {}",
+            &entry.git_head[..8.min(entry.git_head.len())]
+        );
         println!("    Current:  {}", &current_git[..8.min(current_git.len())]);
     }
     if ws_match {
@@ -179,17 +181,12 @@ pub async fn run_show(id: Option<i64>, json: bool) -> anyhow::Result<()> {
     }
 
     // Facts summary
-    if let Ok(facts) =
-        serde_json::from_str::<serde_json::Value>(&entry.facts_json)
-    {
+    if let Ok(facts) = serde_json::from_str::<serde_json::Value>(&entry.facts_json) {
         let has_facts = facts
             .as_object()
             .map(|o| {
-                o.values().any(|v| {
-                    v.as_array()
-                        .map(|a| !a.is_empty())
-                        .unwrap_or(false)
-                })
+                o.values()
+                    .any(|v| v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
             })
             .unwrap_or(false);
         if has_facts {
@@ -221,7 +218,9 @@ pub async fn run_list(json: bool) -> anyhow::Result<()> {
     let db = CheckpointDb::open(&db_path)
         .with_context(|| format!("Failed to open checkpoint DB at {}", db_path.display()))?;
 
-    let entries = db.list(&project_path, 50).context("Failed to list checkpoints")?;
+    let entries = db
+        .list(&project_path, 50)
+        .context("Failed to list checkpoints")?;
 
     if json {
         let output: Vec<serde_json::Value> = entries

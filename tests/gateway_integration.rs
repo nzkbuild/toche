@@ -1,7 +1,7 @@
+use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
 use axum::routing::post;
-use axum::Router;
 
 /// A minimal mock upstream that returns a text-only SSE stream.
 async fn mock_upstream(_req: Request<Body>) -> axum::response::Response<Body> {
@@ -55,4 +55,3 @@ fn safe_cache_inspect_text_is_safe() {
     let verdict = toche::safe_cache::inspect::inspect_response(body.as_bytes());
     assert!(verdict.safe);
 }
-

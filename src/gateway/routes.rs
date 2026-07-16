@@ -12,7 +12,7 @@ use crate::continuity;
 use crate::efficiency;
 use crate::meter::db::{LedgerDb, NewLedgerRecord};
 use crate::meter::pricing::PricingMap;
-use crate::meter::recorder::{current_project_path, estimate_tokens, record_request, RequestTimer};
+use crate::meter::recorder::{RequestTimer, current_project_path, estimate_tokens, record_request};
 use crate::profiles::loader::{config_dir, load_profiles};
 use crate::profiles::types::CacheMode;
 use crate::reduce;
@@ -29,7 +29,10 @@ fn extract_model(body: &str) -> String {
             if in_key {
                 if key_buf == "model" {
                     let after_key = body.split(&format!("\"{}\"", key_buf)).nth(1).unwrap_or("");
-                    let after_colon = after_key.trim_start().strip_prefix(':').unwrap_or(after_key);
+                    let after_colon = after_key
+                        .trim_start()
+                        .strip_prefix(':')
+                        .unwrap_or(after_key);
                     let value_start = after_colon.trim_start();
                     if let Some(rest) = value_start.strip_prefix('"') {
                         let end = rest.find('"').unwrap_or(rest.len());
@@ -197,9 +200,7 @@ pub async fn messages(
     let fingerprint = shield::fingerprint::compute(&body);
 
     let shield_result = if bypass_shield {
-        shield::coalesce::CoalesceResult::Forward {
-            key: String::new(),
-        }
+        shield::coalesce::CoalesceResult::Forward { key: String::new() }
     } else {
         shield::coalesce::store()
             .try_acquire(&upstream_url, &fingerprint)
@@ -251,29 +252,45 @@ pub async fn messages(
                         let db_path = config_dir().join("ledger.db");
                         if let Ok(cache_db) = safe_cache::cache_db::CacheDb::open(&db_path) {
                             let _ = cache_db.evict_expired(cfg.ttl_days);
+                            let _ = cache_db.evict_expired_rejects(cfg.ttl_days);
                             if let Ok(Some(entry)) = cache_db.lookup(&project, &fingerprint) {
-                                if entry.workspace_fingerprint == ws_fp {
-                                    if let Ok(bytes) = reduce::storage::retrieve(&entry.response_hash) {
-                                        let _ = cache_db.touch(&project, &fingerprint);
-                                        info!(
-                                            "Safe cache hit: fingerprint={}.., project={}, model={}",
-                                            &fingerprint[..16.min(fingerprint.len())],
-                                            project,
-                                            model
-                                        );
-                                        cache_hit = Some(ForwardedResponse {
-                                            status: entry.status as u16,
-                                            body_bytes: bytes,
-                                            cache_read_tokens: 0,
-                                            cache_create_tokens: 0,
-                                            coalesced_count: 0,
-                                            reduction_input_tokens: 0,
-                                            reduction_output_tokens: 0,
-                                            reduction_count: 0,
-                                            efficiency_tokens_added: 0,
-                                            efficiency_mode: String::new(),
-                                            local_cache_hit: true,
-                                        });
+                                if entry.workspace_fingerprint != ws_fp {
+                                    let _ = cache_db.insert_reject(
+                                        &project,
+                                        &fingerprint,
+                                        "workspace fingerprint mismatch",
+                                    );
+                                } else {
+                                    match reduce::storage::retrieve(&entry.response_hash) {
+                                        Ok(bytes) => {
+                                            let _ = cache_db.touch(&project, &fingerprint);
+                                            info!(
+                                                "Safe cache hit: fingerprint={}.., project={}, model={}",
+                                                &fingerprint[..16.min(fingerprint.len())],
+                                                project,
+                                                model
+                                            );
+                                            cache_hit = Some(ForwardedResponse {
+                                                status: entry.status as u16,
+                                                body_bytes: bytes,
+                                                cache_read_tokens: 0,
+                                                cache_create_tokens: 0,
+                                                coalesced_count: 0,
+                                                reduction_input_tokens: 0,
+                                                reduction_output_tokens: 0,
+                                                reduction_count: 0,
+                                                efficiency_tokens_added: 0,
+                                                efficiency_mode: String::new(),
+                                                local_cache_hit: true,
+                                            });
+                                        }
+                                        Err(_) => {
+                                            let _ = cache_db.insert_reject(
+                                                &project,
+                                                &fingerprint,
+                                                "CAS blob not found",
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -293,171 +310,173 @@ pub async fn messages(
                 );
                 (cached, None)
             } else {
+                // Step 2: Reduce tool output in the request body (after shield,
+                // before cache injection — deterministic reduction is cache-friendly).
+                let default_reduce = reduce::config::ReduceConfig::default();
+                let reduce_cfg = profile.reduce.as_ref().unwrap_or(&default_reduce);
 
-            // Step 2: Reduce tool output in the request body (after shield,
-            // before cache injection — deterministic reduction is cache-friendly).
-            let default_reduce = reduce::config::ReduceConfig::default();
-            let reduce_cfg = profile.reduce.as_ref().unwrap_or(&default_reduce);
-
-            let reduction = reduce::transform::reduce_body(&body, reduce_cfg, bypass_reduce)
-                .unwrap_or_else(|e| {
-                    error!("Reduce: falling back to original body: {e}");
-                    reduce::transform::ReductionResult {
-                        modified_body: body.clone(),
-                        tokens_raw: 0,
-                        tokens_reduced: 0,
-                        reductions: 0,
-                        passthroughs: 0,
-                        hashes: Vec::new(),
-                    }
-                });
-
-            let reduced_body = reduction.modified_body;
-
-            // Step 2.5: Efficiency profile injection (after reduce, before cache).
-            let default_efficiency = efficiency::config::EfficiencyConfig::default();
-            let efficiency_cfg = profile.efficiency.as_ref().unwrap_or(&default_efficiency);
-
-            let instruction = if bypass_efficiency {
-                None
-            } else {
-                efficiency::instructions::instruction_for_mode(&efficiency_cfg.mode)
-            };
-
-            let efficiency_result = efficiency::inject::inject_efficiency(&reduced_body, instruction)
-                .unwrap_or_else(|e| {
-                    error!("Efficiency injection failed, forwarding reduced body: {e}");
-                    efficiency::inject::InjectionResult {
-                        modified_body: reduced_body.clone(),
-                        tokens_added: 0,
-                    }
-                });
-
-            let efficiency_mode_name = match efficiency_cfg.mode {
-                efficiency::config::EfficiencyMode::Normal => String::new(),
-                efficiency::config::EfficiencyMode::Concise => "concise".to_string(),
-                efficiency::config::EfficiencyMode::Careful => "careful".to_string(),
-            };
-            let efficiency_tokens_added = efficiency_result.tokens_added;
-            let body_after_efficiency = efficiency_result.modified_body;
-
-            if !efficiency_mode_name.is_empty() {
-                info!(
-                    "Efficiency: {} mode active, {} tokens injected, profile={}, model={}",
-                    efficiency_mode_name, efficiency_tokens_added, profile_name, model
-                );
-            }
-
-            // Step 3: Cache breakpoint injection on the efficiency-modified body.
-            let final_body = if let Some(ref cache_cfg) = profile.cache {
-                if cache_cfg.enabled && !bypass_cache {
-                    let plan_result =
-                        cache::breakpoint::find_breakpoints(&body_after_efficiency, &cache_cfg.breakpoint);
-                    let bp = plan_result.unwrap_or_else(|e| {
-                        error!("Breakpoint detection failed: {e}");
-                        cache::breakpoint::BreakpointPlan {
-                            system_block_index: None,
-                            message_blocks: Vec::new(),
+                let reduction = reduce::transform::reduce_body(&body, reduce_cfg, bypass_reduce)
+                    .unwrap_or_else(|e| {
+                        error!("Reduce: falling back to original body: {e}");
+                        reduce::transform::ReductionResult {
+                            modified_body: body.clone(),
+                            tokens_raw: 0,
+                            tokens_reduced: 0,
+                            reductions: 0,
+                            passthroughs: 0,
+                            hashes: Vec::new(),
                         }
                     });
-                    match cache_cfg.mode {
-                        CacheMode::Observe => {
-                            if bp.has_breakpoints() {
-                                info!(
-                                    "Cache observe: {} breakpoints found (system={}, messages={}), profile={}, model={}",
-                                    bp.message_blocks.len()
-                                        + if bp.system_block_index.is_some() { 1 } else { 0 },
-                                    bp.system_block_index.is_some(),
-                                    bp.message_blocks.len(),
-                                    profile_name,
-                                    model
-                                );
+
+                let reduced_body = reduction.modified_body;
+
+                // Step 2.5: Efficiency profile injection (after reduce, before cache).
+                let default_efficiency = efficiency::config::EfficiencyConfig::default();
+                let efficiency_cfg = profile.efficiency.as_ref().unwrap_or(&default_efficiency);
+
+                let instruction = if bypass_efficiency {
+                    None
+                } else {
+                    efficiency::instructions::instruction_for_mode(&efficiency_cfg.mode)
+                };
+
+                let efficiency_result =
+                    efficiency::inject::inject_efficiency(&reduced_body, instruction)
+                        .unwrap_or_else(|e| {
+                            error!("Efficiency injection failed, forwarding reduced body: {e}");
+                            efficiency::inject::InjectionResult {
+                                modified_body: reduced_body.clone(),
+                                tokens_added: 0,
                             }
-                            body_after_efficiency
+                        });
+
+                let efficiency_mode_name = match efficiency_cfg.mode {
+                    efficiency::config::EfficiencyMode::Normal => String::new(),
+                    efficiency::config::EfficiencyMode::Concise => "concise".to_string(),
+                    efficiency::config::EfficiencyMode::Careful => "careful".to_string(),
+                };
+                let efficiency_tokens_added = efficiency_result.tokens_added;
+                let body_after_efficiency = efficiency_result.modified_body;
+
+                if !efficiency_mode_name.is_empty() {
+                    info!(
+                        "Efficiency: {} mode active, {} tokens injected, profile={}, model={}",
+                        efficiency_mode_name, efficiency_tokens_added, profile_name, model
+                    );
+                }
+
+                // Step 3: Cache breakpoint injection on the efficiency-modified body.
+                let final_body = if let Some(ref cache_cfg) = profile.cache {
+                    if cache_cfg.enabled && !bypass_cache {
+                        let plan_result = cache::breakpoint::find_breakpoints(
+                            &body_after_efficiency,
+                            &cache_cfg.breakpoint,
+                        );
+                        let bp = plan_result.unwrap_or_else(|e| {
+                            error!("Breakpoint detection failed: {e}");
+                            cache::breakpoint::BreakpointPlan {
+                                system_block_index: None,
+                                message_blocks: Vec::new(),
+                            }
+                        });
+                        match cache_cfg.mode {
+                            CacheMode::Observe => {
+                                if bp.has_breakpoints() {
+                                    info!(
+                                        "Cache observe: {} breakpoints found (system={}, messages={}), profile={}, model={}",
+                                        bp.message_blocks.len()
+                                            + if bp.system_block_index.is_some() {
+                                                1
+                                            } else {
+                                                0
+                                            },
+                                        bp.system_block_index.is_some(),
+                                        bp.message_blocks.len(),
+                                        profile_name,
+                                        model
+                                    );
+                                }
+                                body_after_efficiency
+                            }
+                            CacheMode::Auto => {
+                                let count = bp.message_blocks.len()
+                                    + if bp.system_block_index.is_some() {
+                                        1
+                                    } else {
+                                        0
+                                    };
+                                info!(
+                                    "Cache auto: {} breakpoints injected, profile={}, model={}",
+                                    count, profile_name, model
+                                );
+                                cache::inject::inject_cache_control(&body_after_efficiency, &bp)
+                                    .unwrap_or_else(|e| {
+                                        error!("Cache injection failed: {e}, forwarding body");
+                                        body_after_efficiency
+                                    })
+                            }
                         }
-                        CacheMode::Auto => {
-                            let count = bp.message_blocks.len()
-                                + if bp.system_block_index.is_some() { 1 } else { 0 };
-                            info!(
-                                "Cache auto: {} breakpoints injected, profile={}, model={}",
-                                count, profile_name, model
-                            );
-                            cache::inject::inject_cache_control(&body_after_efficiency, &bp)
-                                .unwrap_or_else(|e| {
-                                    error!("Cache injection failed: {e}, forwarding body");
-                                    body_after_efficiency
-                                })
-                        }
+                    } else {
+                        body_after_efficiency
                     }
                 } else {
                     body_after_efficiency
-                }
-            } else {
-                body_after_efficiency
-            };
+                };
 
-            let mut fwd = forward_to_upstream(
-                &client,
-                &upstream_url,
-                upstream_headers,
-                final_body,
-            )
-            .await?;
-            fwd.reduction_input_tokens = reduction.tokens_raw;
-            fwd.reduction_output_tokens = reduction.tokens_reduced;
-            fwd.reduction_count = reduction.reductions as u64;
-            fwd.efficiency_tokens_added = efficiency_tokens_added;
-            fwd.efficiency_mode = efficiency_mode_name;
+                let mut fwd =
+                    forward_to_upstream(&client, &upstream_url, upstream_headers, final_body)
+                        .await?;
+                fwd.reduction_input_tokens = reduction.tokens_raw;
+                fwd.reduction_output_tokens = reduction.tokens_reduced;
+                fwd.reduction_count = reduction.reductions as u64;
+                fwd.efficiency_tokens_added = efficiency_tokens_added;
+                fwd.efficiency_mode = efficiency_mode_name;
 
-            // On cache miss with safe response, store for future reuse.
-            if !bypass_safe_cache {
-                if let Some(cfg) = safe_cache_cfg {
-                    if cfg.enabled && fwd.status >= 200 && fwd.status < 300 {
-                        let verdict =
-                            safe_cache::inspect::inspect_response(&fwd.body_bytes);
-                        if verdict.safe
-                            && (fwd.body_bytes.len() as u64) <= cfg.max_entry_bytes
-                        {
-                            if let Ok(hash) = reduce::storage::store(&fwd.body_bytes) {
-                                let ws_fp =
-                                    safe_cache::workspace::compute_workspace_fingerprint();
+                // On cache miss with safe response, store for future reuse.
+                if !bypass_safe_cache {
+                    if let Some(cfg) = safe_cache_cfg {
+                        if cfg.enabled && fwd.status >= 200 && fwd.status < 300 {
+                            let verdict = safe_cache::inspect::inspect_response(&fwd.body_bytes);
+                            if verdict.safe && (fwd.body_bytes.len() as u64) <= cfg.max_entry_bytes
+                            {
+                                if let Ok(hash) = reduce::storage::store(&fwd.body_bytes) {
+                                    let ws_fp =
+                                        safe_cache::workspace::compute_workspace_fingerprint();
+                                    let db_path = config_dir().join("ledger.db");
+                                    if let Ok(cache_db) =
+                                        safe_cache::cache_db::CacheDb::open(&db_path)
+                                    {
+                                        let _ =
+                                            cache_db.insert(&safe_cache::cache_db::NewCacheEntry {
+                                                project_path: current_project_path(),
+                                                fingerprint: fingerprint.clone(),
+                                                workspace_fingerprint: ws_fp,
+                                                response_hash: hash,
+                                                model: model.clone(),
+                                                status: fwd.status as i32,
+                                                tokens_input: input_tokens,
+                                                tokens_output: estimate_tokens(
+                                                    &String::from_utf8_lossy(&fwd.body_bytes),
+                                                ),
+                                            });
+                                    }
+                                }
+                            } else if !verdict.safe && !verdict.reason.is_empty() {
                                 let db_path = config_dir().join("ledger.db");
-                                if let Ok(cache_db) =
-                                    safe_cache::cache_db::CacheDb::open(&db_path)
+                                if let Ok(cache_db) = safe_cache::cache_db::CacheDb::open(&db_path)
                                 {
-                                    let _ = cache_db.insert(
-                                        &safe_cache::cache_db::NewCacheEntry {
-                                            project_path: current_project_path(),
-                                            fingerprint: fingerprint.clone(),
-                                            workspace_fingerprint: ws_fp,
-                                            response_hash: hash,
-                                            model: model.clone(),
-                                            status: fwd.status as i32,
-                                            tokens_input: input_tokens,
-                                            tokens_output: estimate_tokens(
-                                                &String::from_utf8_lossy(&fwd.body_bytes),
-                                            ),
-                                        },
+                                    let _ = cache_db.insert_reject(
+                                        &current_project_path(),
+                                        &fingerprint,
+                                        &verdict.reason,
                                     );
                                 }
-                            }
-                        } else if !verdict.safe && !verdict.reason.is_empty() {
-                            let db_path = config_dir().join("ledger.db");
-                            if let Ok(cache_db) =
-                                safe_cache::cache_db::CacheDb::open(&db_path)
-                            {
-                                let _ = cache_db.insert_reject(
-                                    &current_project_path(),
-                                    &fingerprint,
-                                    &verdict.reason,
-                                );
                             }
                         }
                     }
                 }
-            }
 
-            (fwd, if key.is_empty() { None } else { Some(key) })
+                (fwd, if key.is_empty() { None } else { Some(key) })
             }
         }
     };

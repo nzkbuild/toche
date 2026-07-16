@@ -19,20 +19,15 @@ fn config_deserialize_disabled() {
 
 #[test]
 fn config_deserialize_with_path() {
-    let cfg: GraphifyConfig = toml::from_str(
-        "enabled = true\ngraph_path = \"/custom/graph.json\"",
-    )
-    .unwrap();
+    let cfg: GraphifyConfig =
+        toml::from_str("enabled = true\ngraph_path = \"/custom/graph.json\"").unwrap();
     assert!(cfg.enabled);
     assert_eq!(cfg.graph_path, Some("/custom/graph.json".into()));
 }
 
 #[test]
 fn config_deserialize_auto_extract() {
-    let cfg: GraphifyConfig = toml::from_str(
-        "enabled = true\nauto_extract = true",
-    )
-    .unwrap();
+    let cfg: GraphifyConfig = toml::from_str("enabled = true\nauto_extract = true").unwrap();
     assert!(cfg.auto_extract);
 }
 

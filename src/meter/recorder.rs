@@ -42,11 +42,7 @@ pub fn estimate_tokens(text: &str) -> u64 {
 ///
 /// If pricing is unknown for the model, `cost` is set to NULL in the ledger
 /// (the `total_cost_unknown_requests` counter will reflect this).
-pub fn record_request(
-    db: &LedgerDb,
-    pricing: &PricingMap,
-    record: NewLedgerRecord,
-) -> Result<i64> {
+pub fn record_request(db: &LedgerDb, pricing: &PricingMap, record: NewLedgerRecord) -> Result<i64> {
     let cost = pricing.find(&record.model).map(|p| {
         let input_cost = (record.input_tokens as f64) * p.input;
         let output_cost = (record.output_tokens as f64) * p.output;
@@ -55,10 +51,7 @@ pub fn record_request(
         input_cost + output_cost + cache_read_cost + cache_create_cost
     });
 
-    let mut entry = NewLedgerRecord {
-        cost,
-        ..record
-    };
+    let mut entry = NewLedgerRecord { cost, ..record };
 
     // Truncate cost to reasonable precision
     if let Some(ref mut c) = entry.cost {

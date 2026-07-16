@@ -13,13 +13,9 @@ pub struct CapturedResponse {
 #[derive(Debug)]
 pub enum CoalesceResult {
     /// This is the leader — proceed with the upstream request.
-    Forward {
-        key: String,
-    },
+    Forward { key: String },
     /// Another in-flight request already has the response.
-    Coalesced {
-        captured: CapturedResponse,
-    },
+    Coalesced { captured: CapturedResponse },
     /// A prior matching request completed with an error.
     Failed,
 }
@@ -44,11 +40,7 @@ impl CoalesceStore {
     /// Returns `Forward` if this should proceed as the leader, `Coalesced`
     /// if another request already has the response, or `Failed` if a prior
     /// matching request completed with an error.
-    pub async fn try_acquire(
-        &self,
-        upstream_url: &str,
-        fingerprint: &str,
-    ) -> CoalesceResult {
+    pub async fn try_acquire(&self, upstream_url: &str, fingerprint: &str) -> CoalesceResult {
         let key = format!("{}|{}", upstream_url, fingerprint);
 
         let rx = {
@@ -67,9 +59,7 @@ impl CoalesceStore {
         // Wait for the leader to complete (or fail)
         let mut rx = rx;
         match rx.recv().await {
-            Ok(Some(response)) => CoalesceResult::Coalesced {
-                captured: response,
-            },
+            Ok(Some(response)) => CoalesceResult::Coalesced { captured: response },
             Ok(None) | Err(broadcast::error::RecvError::Closed) => CoalesceResult::Failed,
             Err(broadcast::error::RecvError::Lagged(_)) => CoalesceResult::Failed,
         }
@@ -117,8 +107,7 @@ mod tests {
     #[test]
     fn forward_on_first_call() {
         let store = CoalesceStore::new();
-        let result =
-            block_on(store.try_acquire("http://upstream/v1", "abc123"));
+        let result = block_on(store.try_acquire("http://upstream/v1", "abc123"));
         match result {
             CoalesceResult::Forward { .. } => {}
             other => panic!("expected Forward, got {other:?}"),
@@ -130,8 +119,7 @@ mod tests {
         let store = CoalesceStore::new();
 
         // Leader acquires
-        let leader =
-            block_on(store.try_acquire("http://upstream/v1", "abc123"));
+        let leader = block_on(store.try_acquire("http://upstream/v1", "abc123"));
         let key = match leader {
             CoalesceResult::Forward { ref key } => key.clone(),
             _ => panic!("expected Forward"),

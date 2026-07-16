@@ -12,15 +12,12 @@ pub async fn run(agent: Option<&str>) -> anyhow::Result<()> {
 }
 
 async fn disconnect_claude() -> anyhow::Result<()> {
-    let settings_path = utils::home_dir()
-        .join(".claude")
-        .join("settings.json");
+    let settings_path = utils::home_dir().join(".claude").join("settings.json");
     let backup_path = settings_path.with_extension("json.toche-backup");
 
     // Verify current settings actually point to Toche before restoring
     if settings_path.exists() {
-        let current = utils::read_jsonc(&settings_path)
-            .context("Failed to parse settings.json")?;
+        let current = utils::read_jsonc(&settings_path).context("Failed to parse settings.json")?;
         let points_to_toche = current
             .get("baseURL")
             .and_then(|v| v.as_str())
@@ -39,8 +36,8 @@ async fn disconnect_claude() -> anyhow::Result<()> {
         println!("Restored previous Claude Code configuration.");
     } else {
         // No backup — remove the baseURL field Toche added
-        let mut settings = utils::read_jsonc(&settings_path)
-            .context("Failed to parse settings.json")?;
+        let mut settings =
+            utils::read_jsonc(&settings_path).context("Failed to parse settings.json")?;
         if let Some(obj) = settings.as_object_mut() {
             obj.remove("baseURL");
         }

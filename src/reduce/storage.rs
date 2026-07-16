@@ -29,8 +29,7 @@ pub fn store(raw: &[u8]) -> anyhow::Result<String> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create CAS directory {:?}", parent))?;
     }
-    fs::write(&path, raw)
-        .with_context(|| format!("failed to write CAS blob {:?}", path))?;
+    fs::write(&path, raw).with_context(|| format!("failed to write CAS blob {:?}", path))?;
 
     Ok(hash)
 }

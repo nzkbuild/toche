@@ -128,4 +128,18 @@ mod tests {
         assert_eq!(fp.len(), 64);
         assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
     }
+
+    #[test]
+    fn malformed_json_falls_back_to_raw_hash() {
+        let fp = compute("not valid json at all");
+        assert_eq!(fp.len(), 64);
+    }
+
+    #[test]
+    fn fallback_fingerprint_is_repeatable() {
+        let body = "{broken";
+        let fp1 = compute(body);
+        let fp2 = compute(body);
+        assert_eq!(fp1, fp2);
+    }
 }

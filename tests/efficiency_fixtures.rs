@@ -4,8 +4,7 @@ use toche::efficiency::instructions;
 
 fn load_fixture(name: &str) -> String {
     let path = format!("tests/fixtures/efficiency/{name}.json");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("Failed to read fixture {path}: {e}"))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("Failed to read fixture {path}: {e}"))
 }
 
 #[test]
@@ -17,7 +16,11 @@ fn concise_mode_injects_instruction() {
     assert_ne!(result.modified_body, body);
     let parsed: serde_json::Value = serde_json::from_str(&result.modified_body).unwrap();
     let system = parsed["system"].as_array().unwrap();
-    assert_eq!(system.len(), 2, "system should have original + instruction block");
+    assert_eq!(
+        system.len(),
+        2,
+        "system should have original + instruction block"
+    );
     assert_eq!(system[1]["type"], "text");
     assert!(system[1]["text"].as_str().unwrap().contains("concision"));
 }

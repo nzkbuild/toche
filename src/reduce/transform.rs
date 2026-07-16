@@ -86,10 +86,7 @@ pub fn reduce_body(
                 .and_then(Value::as_str)
                 .unwrap_or("");
 
-            let tool_name = tool_map
-                .get(tool_use_id)
-                .map(|s| s.as_str())
-                .unwrap_or("");
+            let tool_name = tool_map.get(tool_use_id).map(|s| s.as_str()).unwrap_or("");
 
             // Check bypass list (exact match on tool name).
             if !tool_name.is_empty() && config.command_bypass.iter().any(|b| b == tool_name) {
@@ -210,7 +207,9 @@ fn replace_content(block: &mut Value, new_text: &str) {
     if is_string {
         block["content"] = Value::String(new_text.to_string());
     } else if is_array {
-        let Some(parts) = block["content"].as_array_mut() else { return; };
+        let Some(parts) = block["content"].as_array_mut() else {
+            return;
+        };
         let mut replaced = false;
         for part in parts.iter_mut() {
             if part.get("type").and_then(Value::as_str) == Some("text") {
@@ -280,7 +279,10 @@ mod tests {
   ]
 }"#;
         let r = reduce_body(body, &make_config(), false).expect("should succeed");
-        assert!(r.reductions > 0 || r.passthroughs > 0, "should process tool_result");
+        assert!(
+            r.reductions > 0 || r.passthroughs > 0,
+            "should process tool_result"
+        );
         assert!(r.modified_body.contains("toche:reduced") || r.passthroughs > 0);
     }
 

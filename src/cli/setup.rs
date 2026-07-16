@@ -16,17 +16,17 @@ pub async fn run() -> anyhow::Result<()> {
 
     let profiles = if let Some(settings) = claude_settings {
         let profile = import_from_claude_settings(&settings)?;
-        println!(
-            "Detected Claude Code upstream: {}",
-            profile.upstream_url
-        );
+        println!("Detected Claude Code upstream: {}", profile.upstream_url);
         Profiles {
             default: Some(profile.name.clone()),
             profiles: vec![profile],
         }
     } else {
         println!("No existing Claude Code gateway found.");
-        println!("Create {}/profiles.toml to configure your upstream.", dir.display());
+        println!(
+            "Create {}/profiles.toml to configure your upstream.",
+            dir.display()
+        );
         println!("Example:");
         println!("  [[profiles]]");
         println!("  name = \"default\"");

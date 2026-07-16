@@ -55,10 +55,7 @@ pub fn find_breakpoints(body: &str, policy: &CacheBreakpoint) -> Result<Breakpoi
     let mut last_non_tool_content_idx: Option<(usize, usize)> = None;
 
     for (mi, msg) in messages.iter().enumerate() {
-        let role = msg
-            .get("role")
-            .and_then(|r| r.as_str())
-            .unwrap_or("");
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
 
         let content = match msg.get("content") {
             Some(Value::Array(arr)) => arr,

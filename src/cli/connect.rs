@@ -12,15 +12,12 @@ pub async fn run(agent: Option<&str>) -> anyhow::Result<()> {
 }
 
 async fn connect_claude() -> anyhow::Result<()> {
-    let settings_path = utils::home_dir()
-        .join(".claude")
-        .join("settings.json");
+    let settings_path = utils::home_dir().join(".claude").join("settings.json");
     let backup_path = settings_path.with_extension("json.toche-backup");
 
     // Check if already connected
     if settings_path.exists() {
-        let current = utils::read_jsonc(&settings_path)
-            .context("Failed to parse settings.json")?;
+        let current = utils::read_jsonc(&settings_path).context("Failed to parse settings.json")?;
         let already_toche = current
             .get("baseURL")
             .and_then(|v| v.as_str())
@@ -31,8 +28,7 @@ async fn connect_claude() -> anyhow::Result<()> {
             return Ok(());
         }
         // Only backup if NOT already connected to Toche
-        std::fs::copy(&settings_path, &backup_path)
-            .context("Failed to backup settings.json")?;
+        std::fs::copy(&settings_path, &backup_path).context("Failed to backup settings.json")?;
     }
 
     // Read settings (JSONC-tolerant)

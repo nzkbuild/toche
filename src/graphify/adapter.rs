@@ -37,12 +37,8 @@ impl GraphifyAdapter {
         match child {
             Ok(output) => GraphifyResult {
                 success: output.status.success(),
-                output: String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .to_string(),
-                error: String::from_utf8_lossy(&output.stderr)
-                    .trim()
-                    .to_string(),
+                output: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+                error: String::from_utf8_lossy(&output.stderr).trim().to_string(),
             },
             Err(e) => GraphifyResult {
                 success: false,

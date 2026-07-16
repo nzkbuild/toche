@@ -14,7 +14,10 @@ mod safe_cache;
 mod shield;
 
 #[derive(Parser)]
-#[command(name = "toche", about = "Local context-efficiency gateway for Claude Code")]
+#[command(
+    name = "toche",
+    about = "Local context-efficiency gateway for Claude Code"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -123,9 +126,7 @@ enum CheckpointAction {
         json: bool,
     },
     /// Delete a checkpoint by ID
-    Delete {
-        id: i64,
-    },
+    Delete { id: i64 },
 }
 
 #[derive(Subcommand)]
@@ -138,14 +139,9 @@ enum GraphAction {
         budget: Option<u32>,
     },
     /// Find the shortest path between two concepts
-    Path {
-        source: String,
-        target: String,
-    },
+    Path { source: String, target: String },
     /// Explain a node (source file, community, connections)
-    Explain {
-        node: String,
-    },
+    Explain { node: String },
     /// Show nodes affected by a change to a node
     Affected {
         node: String,
@@ -209,7 +205,9 @@ async fn main() -> anyhow::Result<()> {
             CheckpointAction::Delete { id } => cli::checkpoint::run_delete(id).await,
         },
         Some(Commands::Graph { action }) => match action {
-            GraphAction::Query { question, budget } => cli::graph::run_query(question, budget).await,
+            GraphAction::Query { question, budget } => {
+                cli::graph::run_query(question, budget).await
+            }
             GraphAction::Path { source, target } => cli::graph::run_path(source, target).await,
             GraphAction::Explain { node } => cli::graph::run_explain(node).await,
             GraphAction::Affected { node, depth } => cli::graph::run_affected(node, depth).await,

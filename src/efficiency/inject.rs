@@ -29,8 +29,8 @@ pub fn inject_efficiency(body: &str, instruction: Option<&str>) -> anyhow::Resul
         Some(text) => text,
     };
 
-    let mut root: Value =
-        serde_json::from_str(body).context("Failed to parse request body for efficiency injection")?;
+    let mut root: Value = serde_json::from_str(body)
+        .context("Failed to parse request body for efficiency injection")?;
 
     let block = serde_json::json!({"type": "text", "text": instruction});
 
@@ -82,7 +82,8 @@ mod tests {
 
     #[test]
     fn no_system_key_returns_unchanged() {
-        let body = r#"{"model": "claude-sonnet-5", "messages": [{"role": "user", "content": "hi"}]}"#;
+        let body =
+            r#"{"model": "claude-sonnet-5", "messages": [{"role": "user", "content": "hi"}]}"#;
         let result = inject_efficiency(body, Some("be concise")).unwrap();
         assert_eq!(result.modified_body, body);
         assert_eq!(result.tokens_added, 0);
@@ -139,6 +140,9 @@ mod tests {
         let last_block = &parsed["system"].as_array().unwrap()[1];
         assert_eq!(last_block["type"], "text");
         assert_eq!(last_block["text"], "injected");
-        assert!(last_block.as_object().unwrap().len() == 2, "only type and text keys");
+        assert!(
+            last_block.as_object().unwrap().len() == 2,
+            "only type and text keys"
+        );
     }
 }
