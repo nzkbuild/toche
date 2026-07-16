@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 mod cache;
 mod cli;
 mod config;
+mod continuity;
 mod efficiency;
 mod gateway;
 mod meter;
@@ -52,6 +53,11 @@ enum Commands {
         #[command(subcommand)]
         action: CacheAction,
     },
+    /// Save, view, and manage session checkpoints
+    Checkpoint {
+        #[command(subcommand)]
+        action: CheckpointAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -79,6 +85,43 @@ enum CacheAction {
     },
 }
 
+#[derive(Subcommand)]
+enum CheckpointAction {
+    /// Save a new checkpoint
+    Save {
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        completed: Option<Vec<String>>,
+        #[arg(long)]
+        next: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        changed_files: Option<Vec<String>>,
+        #[arg(long)]
+        verification: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        open_risks: Option<Vec<String>>,
+        #[arg(long)]
+        model_assisted: bool,
+    },
+    /// Show a checkpoint (latest by default)
+    Show {
+        #[arg(long)]
+        id: Option<i64>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List checkpoints for the current project
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a checkpoint by ID
+    Delete {
+        id: i64,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -102,6 +145,31 @@ async fn main() -> anyhow::Result<()> {
             CacheAction::Inspect { json, entries } => cli::cache::run_inspect(json, entries).await,
             CacheAction::Clear { project, all } => cli::cache::run_clear(project, all).await,
             CacheAction::Why { fingerprint } => cli::cache::run_why(&fingerprint).await,
+        },
+        Some(Commands::Checkpoint { action }) => match action {
+            CheckpointAction::Save {
+                task,
+                completed,
+                next,
+                changed_files,
+                verification,
+                open_risks,
+                model_assisted,
+            } => {
+                cli::checkpoint::run_save(
+                    task,
+                    completed,
+                    next,
+                    changed_files,
+                    verification,
+                    open_risks,
+                    model_assisted,
+                )
+                .await
+            }
+            CheckpointAction::Show { id, json } => cli::checkpoint::run_show(id, json).await,
+            CheckpointAction::List { json } => cli::checkpoint::run_list(json).await,
+            CheckpointAction::Delete { id } => cli::checkpoint::run_delete(id).await,
         },
         None => gateway::serve().await,
     }

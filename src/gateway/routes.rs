@@ -8,6 +8,7 @@ use reqwest::Client;
 use tracing::{error, info};
 
 use crate::cache;
+use crate::continuity;
 use crate::efficiency;
 use crate::meter::db::{LedgerDb, NewLedgerRecord};
 use crate::meter::pricing::PricingMap;
@@ -458,6 +459,9 @@ pub async fn messages(
         let data = String::from_utf8_lossy(&body_bytes).to_string();
         async move { Ok(Event::default().data(data)) }
     });
+
+    // Feed response to session observer for fact collection
+    continuity::observer::observe_response(&body_bytes);
 
     // Record to ledger (fire-and-forget)
     let model_clone = model;

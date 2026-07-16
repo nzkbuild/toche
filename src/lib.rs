@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod continuity;
 pub mod efficiency;
 pub mod profiles;
 pub mod reduce;

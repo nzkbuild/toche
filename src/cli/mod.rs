@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod checkpoint;
 pub mod connect;
 pub mod disconnect;
 pub mod doctor;
