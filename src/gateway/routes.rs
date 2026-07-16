@@ -8,11 +8,13 @@ use reqwest::Client;
 use tracing::{error, info};
 
 use crate::cache;
+use crate::efficiency;
 use crate::meter::db::{LedgerDb, NewLedgerRecord};
 use crate::meter::pricing::PricingMap;
 use crate::meter::recorder::{current_project_path, estimate_tokens, record_request, RequestTimer};
 use crate::profiles::loader::{config_dir, load_profiles};
 use crate::profiles::types::CacheMode;
+use crate::reduce;
 use crate::shield;
 
 /// Parse the "model" field from an Anthropic Messages API JSON body.
@@ -51,6 +53,11 @@ struct ForwardedResponse {
     cache_read_tokens: u64,
     cache_create_tokens: u64,
     coalesced_count: u64,
+    reduction_input_tokens: u64,
+    reduction_output_tokens: u64,
+    reduction_count: u64,
+    efficiency_tokens_added: u64,
+    efficiency_mode: String,
 }
 
 /// Forward a request to the upstream and collect the full response body.
@@ -111,6 +118,11 @@ async fn forward_to_upstream(
         cache_read_tokens: cache_read,
         cache_create_tokens: cache_create,
         coalesced_count: 0,
+        reduction_input_tokens: 0,
+        reduction_output_tokens: 0,
+        reduction_count: 0,
+        efficiency_tokens_added: 0,
+        efficiency_mode: String::new(),
     })
 }
 
@@ -133,54 +145,6 @@ pub async fn messages(
     let model = extract_model(&body);
     let profile_name = profile.name.clone();
     let input_tokens = estimate_tokens(&body);
-
-    // Cache coordination: evaluate breakpoints before forwarding
-    let modified_body = if let Some(ref cache_cfg) = profile.cache {
-        if cache_cfg.enabled {
-            let plan_result =
-                cache::breakpoint::find_breakpoints(&body, &cache_cfg.breakpoint);
-            let bp = plan_result.unwrap_or_else(|e| {
-                error!("Breakpoint detection failed: {e}");
-                cache::breakpoint::BreakpointPlan {
-                    system_block_index: None,
-                    message_blocks: Vec::new(),
-                }
-            });
-            match cache_cfg.mode {
-                CacheMode::Observe => {
-                    if bp.has_breakpoints() {
-                        info!(
-                            "Cache observe: {} breakpoints found (system={}, messages={}), profile={}, model={}",
-                            bp.message_blocks.len()
-                                + if bp.system_block_index.is_some() { 1 } else { 0 },
-                            bp.system_block_index.is_some(),
-                            bp.message_blocks.len(),
-                            profile_name,
-                            model
-                        );
-                    }
-                    body.clone()
-                }
-                CacheMode::Auto => {
-                    let count = bp.message_blocks.len()
-                        + if bp.system_block_index.is_some() { 1 } else { 0 };
-                    info!(
-                        "Cache auto: {} breakpoints injected, profile={}, model={}",
-                        count, profile_name, model
-                    );
-                    cache::inject::inject_cache_control(&body, &bp)
-                        .unwrap_or_else(|e| {
-                            error!("Cache injection failed: {e}, forwarding original");
-                            body.clone()
-                        })
-                }
-            }
-        } else {
-            body.clone()
-        }
-    } else {
-        body.clone()
-    };
 
     let upstream_url = format!("{}/v1/messages", profile.upstream_url.trim_end_matches('/'));
 
@@ -206,8 +170,10 @@ pub async fn messages(
         );
     }
 
-    // Request Shield: coalesce identical in-flight requests
-    let fingerprint = shield::fingerprint::compute(&modified_body);
+    // Step 1: Request Shield — coalesce identical in-flight requests on the
+    // raw body (before any reduction/cache modifications) for maximum
+    // coalescing.
+    let fingerprint = shield::fingerprint::compute(&body);
 
     let shield_result = shield::coalesce::store()
         .try_acquire(&upstream_url, &fingerprint)
@@ -228,6 +194,11 @@ pub async fn messages(
                     cache_read_tokens: 0,
                     cache_create_tokens: 0,
                     coalesced_count: 1,
+                    reduction_input_tokens: 0,
+                    reduction_output_tokens: 0,
+                    reduction_count: 0,
+                    efficiency_tokens_added: 0,
+                    efficiency_mode: String::new(),
                 },
                 None,
             )
@@ -238,13 +209,134 @@ pub async fn messages(
         }
         shield::coalesce::CoalesceResult::Forward { key } => {
             info!("Forwarding to upstream: {upstream_url}");
-            let fwd = forward_to_upstream(
+
+            // Step 2: Reduce tool output in the request body (after shield,
+            // before cache injection — deterministic reduction is cache-friendly).
+            let default_reduce = reduce::config::ReduceConfig::default();
+            let reduce_cfg = profile.reduce.as_ref().unwrap_or(&default_reduce);
+            let bypass_reduce = headers
+                .get("x-toche-bypass-reduce")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.trim().to_lowercase())
+                .as_deref()
+                == Some("true");
+
+            let reduction = reduce::transform::reduce_body(&body, reduce_cfg, bypass_reduce)
+                .unwrap_or_else(|e| {
+                    error!("Reduce: falling back to original body: {e}");
+                    reduce::transform::ReductionResult {
+                        modified_body: body.clone(),
+                        tokens_raw: 0,
+                        tokens_reduced: 0,
+                        reductions: 0,
+                        passthroughs: 0,
+                        hashes: Vec::new(),
+                    }
+                });
+
+            let reduced_body = reduction.modified_body;
+
+            // Step 2.5: Efficiency profile injection (after reduce, before cache).
+            let default_efficiency = efficiency::config::EfficiencyConfig::default();
+            let efficiency_cfg = profile.efficiency.as_ref().unwrap_or(&default_efficiency);
+            let bypass_efficiency = headers
+                .get("x-toche-bypass-efficiency")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.trim().to_lowercase())
+                .as_deref()
+                == Some("true");
+
+            let instruction = if bypass_efficiency {
+                None
+            } else {
+                efficiency::instructions::instruction_for_mode(&efficiency_cfg.mode)
+            };
+
+            let efficiency_result = efficiency::inject::inject_efficiency(&reduced_body, instruction)
+                .unwrap_or_else(|e| {
+                    error!("Efficiency injection failed, forwarding reduced body: {e}");
+                    efficiency::inject::InjectionResult {
+                        modified_body: reduced_body.clone(),
+                        tokens_added: 0,
+                    }
+                });
+
+            let efficiency_mode_name = match efficiency_cfg.mode {
+                efficiency::config::EfficiencyMode::Normal => String::new(),
+                efficiency::config::EfficiencyMode::Concise => "concise".to_string(),
+                efficiency::config::EfficiencyMode::Careful => "careful".to_string(),
+            };
+            let efficiency_tokens_added = efficiency_result.tokens_added;
+            let body_after_efficiency = efficiency_result.modified_body;
+
+            if !efficiency_mode_name.is_empty() {
+                info!(
+                    "Efficiency: {} mode active, {} tokens injected, profile={}, model={}",
+                    efficiency_mode_name, efficiency_tokens_added, profile_name, model
+                );
+            }
+
+            // Step 3: Cache breakpoint injection on the efficiency-modified body.
+            let final_body = if let Some(ref cache_cfg) = profile.cache {
+                if cache_cfg.enabled {
+                    let plan_result =
+                        cache::breakpoint::find_breakpoints(&body_after_efficiency, &cache_cfg.breakpoint);
+                    let bp = plan_result.unwrap_or_else(|e| {
+                        error!("Breakpoint detection failed: {e}");
+                        cache::breakpoint::BreakpointPlan {
+                            system_block_index: None,
+                            message_blocks: Vec::new(),
+                        }
+                    });
+                    match cache_cfg.mode {
+                        CacheMode::Observe => {
+                            if bp.has_breakpoints() {
+                                info!(
+                                    "Cache observe: {} breakpoints found (system={}, messages={}), profile={}, model={}",
+                                    bp.message_blocks.len()
+                                        + if bp.system_block_index.is_some() { 1 } else { 0 },
+                                    bp.system_block_index.is_some(),
+                                    bp.message_blocks.len(),
+                                    profile_name,
+                                    model
+                                );
+                            }
+                            body_after_efficiency
+                        }
+                        CacheMode::Auto => {
+                            let count = bp.message_blocks.len()
+                                + if bp.system_block_index.is_some() { 1 } else { 0 };
+                            info!(
+                                "Cache auto: {} breakpoints injected, profile={}, model={}",
+                                count, profile_name, model
+                            );
+                            cache::inject::inject_cache_control(&body_after_efficiency, &bp)
+                                .unwrap_or_else(|e| {
+                                    error!("Cache injection failed: {e}, forwarding body");
+                                    body_after_efficiency
+                                })
+                        }
+                    }
+                } else {
+                    body_after_efficiency
+                }
+            } else {
+                body_after_efficiency
+            };
+
+            let mut fwd = forward_to_upstream(
                 &client,
                 &upstream_url,
                 upstream_headers,
-                modified_body,
+                final_body,
             )
             .await?;
+            fwd.reduction_input_tokens = reduction.tokens_raw;
+            fwd.reduction_output_tokens = reduction.tokens_reduced;
+            fwd.reduction_count = reduction.reductions as u64;
+            fwd.efficiency_tokens_added = efficiency_tokens_added;
+            fwd.efficiency_mode = efficiency_mode_name;
+
             (fwd, Some(key))
         }
     };
@@ -271,6 +363,11 @@ pub async fn messages(
     let cache_read = forwarded.cache_read_tokens;
     let cache_create = forwarded.cache_create_tokens;
     let coalesced_count = forwarded.coalesced_count;
+    let reduction_input = forwarded.reduction_input_tokens;
+    let reduction_output = forwarded.reduction_output_tokens;
+    let reduction_count = forwarded.reduction_count;
+    let efficiency_mode = forwarded.efficiency_mode;
+    let efficiency_tokens_added = forwarded.efficiency_tokens_added;
     tokio::spawn(async move {
         let db_path = config_dir().join("ledger.db");
         let db = match LedgerDb::open(&db_path) {
@@ -307,6 +404,10 @@ pub async fn messages(
             status: status_clone,
             cost: None,
             project_path,
+            reduction_input_tokens: reduction_input,
+            reduction_output_tokens: reduction_output,
+            reduction_count,
+            efficiency_mode,
         };
         if let Err(e) = record_request(&db, &pricing, record) {
             error!("Failed to record to ledger: {e}");

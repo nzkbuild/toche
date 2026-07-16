@@ -90,5 +90,7 @@ fn import_from_claude_settings(settings: &serde_json::Value) -> anyhow::Result<P
         headers: Default::default(),
         models: Default::default(),
         cache: None,
+        reduce: None,
+        efficiency: None,
     })
 }

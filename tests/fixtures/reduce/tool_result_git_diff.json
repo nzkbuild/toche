@@ -1,0 +1,9 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 1024,
+  "messages": [
+    {"role": "user", "content": "run biome check"},
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_002", "name": "biome", "input": {}}]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_002", "content": "src/main.ts:5:1 lint/style/noUnusedVariables  FIXABLE  ━━━━━━━━━━━━━\n  ! This variable is unused.\n  \n  > 5 │ const unused = 42;\n      │       ^^^^^^\n  \n  i Unused variables usually are a sign of an incomplete refactoring.\n\nChecked 15 files in 234ms. Found 1 error."}]}
+  ]
+}

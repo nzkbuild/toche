@@ -20,6 +20,10 @@ pub struct NewLedgerRecord {
     pub status: String,
     pub cost: Option<f64>,
     pub project_path: String,
+    pub reduction_input_tokens: u64,
+    pub reduction_output_tokens: u64,
+    pub reduction_count: u64,
+    pub efficiency_mode: String,
 }
 
 pub struct LedgerDb {
@@ -50,7 +54,11 @@ impl LedgerDb {
                 latency_ms INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'success',
                 cost REAL,
-                project_path TEXT NOT NULL DEFAULT ''
+                project_path TEXT NOT NULL DEFAULT '',
+                reduction_input_tokens INTEGER NOT NULL DEFAULT 0,
+                reduction_output_tokens INTEGER NOT NULL DEFAULT 0,
+                reduction_count INTEGER NOT NULL DEFAULT 0,
+                efficiency_mode TEXT NOT NULL DEFAULT ''
             )",
             [],
         )?;
@@ -63,18 +71,39 @@ impl LedgerDb {
             [],
         )?;
 
-        // Migration: add coalesced_count to existing databases
-        let has_column: bool = {
-            let mut stmt =
-                conn.prepare("PRAGMA table_info(ledger)")?;
-            let columns: Vec<String> = stmt
-                .query_map([], |row| row.get::<_, String>(1))?
-                .collect::<Result<Vec<_>, _>>()?;
-            columns.iter().any(|c| c == "coalesced_count")
+        // Migration: add new columns to existing databases
+        let columns: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(ledger)")?;
+            stmt.query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?
         };
-        if !has_column {
+        if !columns.iter().any(|c| c == "coalesced_count") {
             conn.execute(
                 "ALTER TABLE ledger ADD COLUMN coalesced_count INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !columns.iter().any(|c| c == "reduction_input_tokens") {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN reduction_input_tokens INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !columns.iter().any(|c| c == "reduction_output_tokens") {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN reduction_output_tokens INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !columns.iter().any(|c| c == "reduction_count") {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN reduction_count INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !columns.iter().any(|c| c == "efficiency_mode") {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN efficiency_mode TEXT NOT NULL DEFAULT ''",
                 [],
             )?;
         }
@@ -85,8 +114,9 @@ impl LedgerDb {
     pub fn record(&self, entry: &NewLedgerRecord) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO ledger (timestamp, model, profile_name, input_tokens, output_tokens,
-             cache_read_input_tokens, cache_creation_input_tokens, coalesced_count, latency_ms, status, cost, project_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             cache_read_input_tokens, cache_creation_input_tokens, coalesced_count, latency_ms, status, cost, project_path,
+             reduction_input_tokens, reduction_output_tokens, reduction_count, efficiency_mode)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             rusqlite::params![
                 entry.timestamp.to_rfc3339(),
                 entry.model,
@@ -100,6 +130,10 @@ impl LedgerDb {
                 entry.status,
                 entry.cost,
                 entry.project_path,
+                entry.reduction_input_tokens as i64,
+                entry.reduction_output_tokens as i64,
+                entry.reduction_count as i64,
+                entry.efficiency_mode,
             ],
         )?;
         self.cleanup_old()?;
@@ -137,7 +171,10 @@ impl LedgerDb {
                     COALESCE(SUM(coalesced_count), 0),
                     COALESCE(AVG(latency_ms), 0),
                     COALESCE(SUM(CASE WHEN cost IS NOT NULL THEN cost ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0)
+                    COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(reduction_input_tokens), 0),
+                    COALESCE(SUM(reduction_output_tokens), 0),
+                    COALESCE(SUM(reduction_count), 0)
              FROM ledger
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)";
 
@@ -155,6 +192,10 @@ impl LedgerDb {
                         avg_latency_ms: row.get::<_, f64>(6)?,
                         total_cost_known: row.get::<_, f64>(7)?,
                         total_cost_unknown_requests: row.get::<_, i64>(8)? as u64,
+                        reduction_input_tokens: row.get::<_, i64>(9)? as u64,
+                        reduction_output_tokens: row.get::<_, i64>(10)? as u64,
+                        reduction_count: row.get::<_, i64>(11)? as u64,
+                        efficiency_mode: String::new(),
                     })
                 },
             )?;
@@ -165,7 +206,10 @@ impl LedgerDb {
                     COALESCE(SUM(coalesced_count), 0),
                     COALESCE(AVG(latency_ms), 0),
                     COALESCE(SUM(CASE WHEN cost IS NOT NULL THEN cost ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0)
+                    COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(reduction_input_tokens), 0),
+                    COALESCE(SUM(reduction_output_tokens), 0),
+                    COALESCE(SUM(reduction_count), 0)
              FROM ledger
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2) AND model = ?3";
 
@@ -183,6 +227,10 @@ impl LedgerDb {
                         avg_latency_ms: row.get::<_, f64>(6)?,
                         total_cost_known: row.get::<_, f64>(7)?,
                         total_cost_unknown_requests: row.get::<_, i64>(8)? as u64,
+                        reduction_input_tokens: row.get::<_, i64>(9)? as u64,
+                        reduction_output_tokens: row.get::<_, i64>(10)? as u64,
+                        reduction_count: row.get::<_, i64>(11)? as u64,
+                        efficiency_mode: String::new(),
                     })
                 },
             )?;
@@ -225,7 +273,10 @@ impl LedgerDb {
                         COALESCE(SUM(coalesced_count), 0),
                         COALESCE(AVG(latency_ms), 0),
                         COALESCE(SUM(CASE WHEN cost IS NOT NULL THEN cost ELSE 0 END), 0),
-                        COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0)
+                        COALESCE(SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(reduction_input_tokens), 0),
+                        COALESCE(SUM(reduction_output_tokens), 0),
+                        COALESCE(SUM(reduction_count), 0)
                  FROM ledger
                  WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
                  GROUP BY DATE(timestamp) ORDER BY DATE(timestamp) DESC LIMIT 30",
@@ -246,6 +297,10 @@ impl LedgerDb {
                         avg_latency_ms: row.get::<_, f64>(7)?,
                         total_cost_known: row.get::<_, f64>(8)?,
                         total_cost_unknown_requests: row.get::<_, i64>(9)? as u64,
+                        reduction_input_tokens: row.get::<_, i64>(10)? as u64,
+                        reduction_output_tokens: row.get::<_, i64>(11)? as u64,
+                        reduction_count: row.get::<_, i64>(12)? as u64,
+                        efficiency_mode: String::new(),
                     },
                 })
             })?;
@@ -263,7 +318,8 @@ impl LedgerDb {
         let (exact, glob) = Self::project_filter(project_path);
         let mut stmt = self.conn.prepare(
             "SELECT id, timestamp, model, profile_name, input_tokens, output_tokens,
-                    cache_read_input_tokens, cache_creation_input_tokens, coalesced_count, latency_ms, status, cost, project_path
+                    cache_read_input_tokens, cache_creation_input_tokens, coalesced_count, latency_ms, status, cost, project_path,
+                    reduction_input_tokens, reduction_output_tokens, reduction_count, efficiency_mode
              FROM ledger
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
              ORDER BY timestamp DESC LIMIT ?3",
@@ -289,6 +345,10 @@ impl LedgerDb {
                     status: row.get(10)?,
                     cost: row.get(11)?,
                     project_path: row.get(12)?,
+                    reduction_input_tokens: row.get::<_, i64>(13)? as u64,
+                    reduction_output_tokens: row.get::<_, i64>(14)? as u64,
+                    reduction_count: row.get::<_, i64>(15)? as u64,
+                    efficiency_mode: row.get(16)?,
                 })
             },
         )?;
@@ -321,6 +381,10 @@ mod tests {
             status: "success".into(),
             cost: Some(0.0042),
             project_path: "/home/user/project".into(),
+            reduction_input_tokens: 0,
+            reduction_output_tokens: 0,
+            reduction_count: 0,
+            efficiency_mode: String::new(),
         };
         let id = db.record(&record).unwrap();
         assert!(id > 0);
@@ -348,6 +412,10 @@ mod tests {
             status: "success".into(),
             cost: Some(0.003),
             project_path: "/tmp/test".into(),
+            reduction_input_tokens: 0,
+            reduction_output_tokens: 0,
+            reduction_count: 0,
+            efficiency_mode: String::new(),
         })
         .unwrap();
         db.record(&NewLedgerRecord {
@@ -363,6 +431,10 @@ mod tests {
             status: "error".into(),
             cost: None,
             project_path: "/tmp/test".into(),
+            reduction_input_tokens: 0,
+            reduction_output_tokens: 0,
+            reduction_count: 0,
+            efficiency_mode: String::new(),
         })
         .unwrap();
 
@@ -391,6 +463,10 @@ mod tests {
             status: "success".into(),
             cost: None,
             project_path: "/tmp".into(),
+            reduction_input_tokens: 0,
+            reduction_output_tokens: 0,
+            reduction_count: 0,
+            efficiency_mode: String::new(),
         })
         .unwrap();
 

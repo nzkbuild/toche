@@ -36,6 +36,25 @@ pub async fn run(json: bool, entries: u32) -> anyhow::Result<()> {
         println!("Output tokens:       {}", t.output_tokens);
         println!("Cache read tokens:   {}", t.cache_read_input_tokens);
         println!("Cache create tokens: {}", t.cache_creation_input_tokens);
+        if t.reduction_count > 0 {
+            let saved = if t.reduction_input_tokens > 0 {
+                let pct = (t.reduction_input_tokens as f64 - t.reduction_output_tokens as f64)
+                    / t.reduction_input_tokens as f64
+                    * 100.0;
+                format!(
+                    "{} ({:.1}%)",
+                    t.reduction_input_tokens - t.reduction_output_tokens,
+                    pct
+                )
+            } else {
+                "0".to_string()
+            };
+            println!("Reduction:");
+            println!("  Tool outputs reduced: {}", t.reduction_count);
+            println!("  Raw tokens:           {}", t.reduction_input_tokens);
+            println!("  Reduced tokens:       {}", t.reduction_output_tokens);
+            println!("  Tokens saved:         {}", saved);
+        }
         println!("Avg latency:         {:.0}ms", t.avg_latency_ms);
         println!("Known cost:          ${:.6}", t.total_cost_known);
         if t.total_cost_unknown_requests > 0 {

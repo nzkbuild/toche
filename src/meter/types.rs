@@ -16,8 +16,11 @@ pub struct LedgerEntry {
     pub status: String,
     pub cost: Option<f64>,
     pub project_path: String,
+    pub reduction_input_tokens: u64,
+    pub reduction_output_tokens: u64,
+    pub reduction_count: u64,
+    pub efficiency_mode: String,
 }
-
 #[derive(Debug, Clone, Serialize)]
 pub struct UsageBreakdown {
     pub input_tokens: u64,
@@ -29,8 +32,11 @@ pub struct UsageBreakdown {
     pub total_cost_known: f64,
     pub total_cost_unknown_requests: u64,
     pub avg_latency_ms: f64,
+    pub reduction_input_tokens: u64,
+    pub reduction_output_tokens: u64,
+    pub reduction_count: u64,
+    pub efficiency_mode: String,
 }
-
 impl Default for UsageBreakdown {
     fn default() -> Self {
         Self {
@@ -43,6 +49,10 @@ impl Default for UsageBreakdown {
             total_cost_known: 0.0,
             total_cost_unknown_requests: 0,
             avg_latency_ms: 0.0,
+            reduction_input_tokens: 0,
+            reduction_output_tokens: 0,
+            reduction_count: 0,
+            efficiency_mode: String::new(),
         }
     }
 }

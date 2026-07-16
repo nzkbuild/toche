@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::efficiency::config::EfficiencyConfig;
+use crate::reduce::config::ReduceConfig;
+
 /// Controls how Toche manages provider prompt caching for a profile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,6 +76,12 @@ pub struct Profile {
     /// Optional per-profile cache coordination configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<CacheConfig>,
+    /// Optional per-profile output reduction configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduce: Option<ReduceConfig>,
+    /// Optional per-profile efficiency behaviour configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub efficiency: Option<EfficiencyConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

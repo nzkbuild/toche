@@ -1,0 +1,9 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 1024,
+  "messages": [
+    {"role": "user", "content": "run my-custom-script"},
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_003", "name": "my-custom-script", "input": {}}]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_003", "content": "This is custom script output\nthat should pass through unchanged\nbecause there is no filter for it."}]}
+  ]
+}

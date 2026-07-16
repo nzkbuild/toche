@@ -1,0 +1,9 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 1024,
+  "messages": [
+    {"role": "user", "content": "ls the directory"},
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_004", "name": "bash", "input": {}}]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_004", "content": "file.txt\nsrc/\nREADME.md"}]}
+  ]
+}

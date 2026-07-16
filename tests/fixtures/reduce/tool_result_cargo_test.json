@@ -1,0 +1,9 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 1024,
+  "messages": [
+    {"role": "user", "content": "run shellcheck"},
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_001", "name": "shellcheck", "input": {}}]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_001", "content": "In script.sh line 3:\nif [[ $1 == \"\" ]]\n     ^-- SC2236: Use -n instead of ! -z.\n\nIn script.sh line 7:\necho $var\n     ^-- SC2086: Double quote to prevent globbing and word splitting.\n\nIn script.sh line 12:\ncat $file\n    ^-- SC2086: Double quote to prevent globbing and word splitting.\n\nIn script.sh line 20:\nrm -rf $dir\n       ^-- SC2115: Use \"${var:?}\" to ensure this never expands to /*.\n\nIn script.sh line 25:\n[ $x == $y ]\n  ^-- SC2086: Double quote to prevent globbing.\n  ^-- SC2086: Double quote to prevent globbing.\n\nIn script.sh line 30:\ngrep foo /var/log/*.log\n           ^-- SC2231: Quote to prevent word expansion.\n\nIn script.sh line 33:\nIFS=\"\"\n^-- SC2034: IFS appears unused. Verify use (or export if used externally).\n\nIn script.sh line 40:\ncd /some/dir\necho \"Now in $(pwd)\"\n^-- SC2164: Use cd ... || exit in case cd fails.\n\nIn script.sh line 45:\nfor f in $(ls *.txt)\n         ^-- SC2045: Iterating over ls output is fragile. Use globs.\n\nIn script.sh line 50:\nwhile read line; do echo $line; done < file\n                        ^-- SC2086: Double quote to prevent globbing."}]}
+  ]
+}

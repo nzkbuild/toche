@@ -115,6 +115,10 @@ mod tests {
             status: "success".into(),
             cost: None,
             project_path: "/tmp/test".into(),
+            reduction_input_tokens: 0,
+            reduction_output_tokens: 0,
+            reduction_count: 0,
+            efficiency_mode: String::new(),
         };
 
         let _id = record_request(&db, &pricing, record).unwrap();
@@ -143,6 +147,10 @@ mod tests {
             status: "success".into(),
             cost: None,
             project_path: "/tmp/test".into(),
+            reduction_input_tokens: 0,
+            reduction_output_tokens: 0,
+            reduction_count: 0,
+            efficiency_mode: String::new(),
         };
 
         let _id = record_request(&db, &pricing, record).unwrap();
