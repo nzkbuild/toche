@@ -64,4 +64,4 @@ No transitive dependencies from these projects are included in Toche. Each proje
 
 ## Toche license
 
-A distribution license for Toche will be selected before public release (see Section 4 of the plan).
+Toche is distributed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
