@@ -62,5 +62,12 @@ pub async fn run() -> anyhow::Result<()> {
     println!("Backup file: {}", backup_path.display());
     println!("  exists: {}", backup_path.exists());
 
+    // Graphify
+    println!();
+    let graphify = which::which("graphify")
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "not installed".into());
+    println!("Graphify: {}", graphify);
+
     Ok(())
 }

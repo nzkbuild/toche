@@ -47,7 +47,40 @@ pub async fn run() -> anyhow::Result<()> {
         path.display()
     );
     println!("Run `toche connect` to point Claude Code to Toche.");
+
+    detect_graphify();
+
     Ok(())
+}
+
+fn detect_graphify() {
+    println!();
+    let on_path = which::which("graphify").is_ok();
+    let uv_path = dirs::home_dir()
+        .unwrap()
+        .join(".local")
+        .join("bin")
+        .join("graphify");
+
+    if on_path || uv_path.exists() {
+        println!(
+            "Detected Graphify at: {}",
+            which::which("graphify")
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| uv_path.display().to_string())
+        );
+        println!("Add [graphify] section to profiles.toml to configure:");
+        println!("  [graphify]");
+        println!("  enabled = true");
+        println!("  # graph_path = \"path/to/graph.json\"  # if non-default");
+        println!("  # auto_extract = false");
+    } else {
+        println!("Graphify not found.");
+        println!("To enable knowledge graph queries, install Graphify:");
+        println!("  uv tool install graphifyy");
+        println!("  # or: pipx install graphifyy");
+        println!("Then add a [graphify] section to your profile in profiles.toml.");
+    }
 }
 
 fn detect_claude_config() -> anyhow::Result<Option<serde_json::Value>> {
@@ -93,5 +126,6 @@ fn import_from_claude_settings(settings: &serde_json::Value) -> anyhow::Result<P
         reduce: None,
         efficiency: None,
         safe_cache: None,
+        graphify: None,
     })
 }

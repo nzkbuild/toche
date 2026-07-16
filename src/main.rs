@@ -6,6 +6,7 @@ mod config;
 mod continuity;
 mod efficiency;
 mod gateway;
+mod graphify;
 mod meter;
 mod profiles;
 mod reduce;
@@ -57,6 +58,11 @@ enum Commands {
     Checkpoint {
         #[command(subcommand)]
         action: CheckpointAction,
+    },
+    /// Interact with the Graphify knowledge graph
+    Graph {
+        #[command(subcommand)]
+        action: GraphAction,
     },
 }
 
@@ -122,6 +128,37 @@ enum CheckpointAction {
     },
 }
 
+#[derive(Subcommand)]
+enum GraphAction {
+    /// Query the knowledge graph
+    Query {
+        question: String,
+        /// Token budget for response (default 2000)
+        #[arg(long)]
+        budget: Option<u32>,
+    },
+    /// Find the shortest path between two concepts
+    Path {
+        source: String,
+        target: String,
+    },
+    /// Explain a node (source file, community, connections)
+    Explain {
+        node: String,
+    },
+    /// Show nodes affected by a change to a node
+    Affected {
+        node: String,
+        /// Search depth
+        #[arg(long)]
+        depth: Option<u32>,
+    },
+    /// Show graph status (node/edge counts)
+    Status,
+    /// Build/rebuild the knowledge graph
+    Extract,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -170,6 +207,14 @@ async fn main() -> anyhow::Result<()> {
             CheckpointAction::Show { id, json } => cli::checkpoint::run_show(id, json).await,
             CheckpointAction::List { json } => cli::checkpoint::run_list(json).await,
             CheckpointAction::Delete { id } => cli::checkpoint::run_delete(id).await,
+        },
+        Some(Commands::Graph { action }) => match action {
+            GraphAction::Query { question, budget } => cli::graph::run_query(question, budget).await,
+            GraphAction::Path { source, target } => cli::graph::run_path(source, target).await,
+            GraphAction::Explain { node } => cli::graph::run_explain(node).await,
+            GraphAction::Affected { node, depth } => cli::graph::run_affected(node, depth).await,
+            GraphAction::Status => cli::graph::run_status().await,
+            GraphAction::Extract => cli::graph::run_extract().await,
         },
         None => gateway::serve().await,
     }

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::efficiency::config::EfficiencyConfig;
+use crate::graphify::config::GraphifyConfig;
 use crate::reduce::config::ReduceConfig;
 use crate::safe_cache::config::SafeCacheConfig;
 
@@ -86,6 +87,9 @@ pub struct Profile {
     /// Optional per-profile persistent safe cache configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safe_cache: Option<SafeCacheConfig>,
+    /// Optional per-profile Graphify knowledge graph configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graphify: Option<GraphifyConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
