@@ -1,6 +1,6 @@
 [package]
 name = "toche"
-version = "1.0.4"
+version = "1.0.6"
 edition = "2024"
 
 [dependencies]
@@ -26,6 +26,11 @@ which = "7"
 
 [dev-dependencies]
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "pipeline"
+harness = false
 
 [build-dependencies]
 toml = "0.8"
