@@ -3,17 +3,25 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
-    let filters_dir = Path::new("vendor_reuse/rtk/src/filters");
+    let filter_dirs = [
+        Path::new("assets/filters/rtk"),
+        Path::new("assets/filters/toche"),
+    ];
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by Cargo");
     let dest = Path::new(&out_dir).join("builtin_filters.toml");
 
-    println!("cargo:rerun-if-changed=vendor_reuse/rtk/src/filters");
+    println!("cargo:rerun-if-changed=assets/filters/rtk");
+    println!("cargo:rerun-if-changed=assets/filters/toche");
 
-    let mut files: Vec<_> = fs::read_dir(filters_dir)
-        .expect("vendor_reuse/rtk/src/filters/ directory must exist")
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "toml"))
-        .collect();
+    let mut files = Vec::new();
+    for filters_dir in filter_dirs {
+        files.extend(
+            fs::read_dir(filters_dir)
+                .unwrap_or_else(|e| panic!("{} must exist: {e}", filters_dir.display()))
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "toml")),
+        );
+    }
 
     files.sort_by_key(|e| e.file_name());
 
@@ -33,7 +41,7 @@ fn main() {
     // Validate: parse the combined TOML to catch errors at build time
     let parsed: toml::Value = combined.parse().unwrap_or_else(|e| {
         panic!(
-            "TOML validation failed for combined filters:\n{}\n\nCheck vendor_reuse/rtk/src/filters/*.toml files",
+            "TOML validation failed for combined filters:\n{}\n\nCheck assets/filters/**/*.toml files",
             e
         )
     });
@@ -44,7 +52,7 @@ fn main() {
         for key in filters.keys() {
             if !seen.insert(key.to_string()) {
                 panic!(
-                    "Duplicate filter name '{}' found across vendor_reuse/rtk/src/filters/*.toml files",
+                    "Duplicate filter name '{}' found across assets/filters/**/*.toml files",
                     key
                 );
             }

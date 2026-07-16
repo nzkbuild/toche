@@ -25,11 +25,16 @@ fn doctor_no_config_ok() {
     assert!(!toche_dir.join("profiles.toml").exists());
 
     // Verify profiles loader handles missing config gracefully
-            unsafe { std::env::set_var("TOCHE_CONFIG_DIR", toche_dir.to_string_lossy().to_string()); }
+    unsafe {
+        std::env::set_var("TOCHE_CONFIG_DIR", toche_dir.to_string_lossy().to_string());
+    }
     let result = std::panic::catch_unwind(|| {
         let _ = toche::profiles::loader::load_profiles();
     });
-    assert!(result.is_ok(), "load_profiles should not panic with missing config");
+    assert!(
+        result.is_ok(),
+        "load_profiles should not panic with missing config"
+    );
 }
 
 #[test]
@@ -38,7 +43,9 @@ fn status_no_profiles_graceful() {
     let toche_dir = dir.path().join(".toche");
     std::fs::create_dir_all(&toche_dir).unwrap();
 
-            unsafe { std::env::set_var("TOCHE_CONFIG_DIR", toche_dir.to_string_lossy().to_string()); }
+    unsafe {
+        std::env::set_var("TOCHE_CONFIG_DIR", toche_dir.to_string_lossy().to_string());
+    }
 
     // load_profiles should return empty, not panic, with no profiles.toml
     let result = std::panic::catch_unwind(|| {
@@ -46,7 +53,10 @@ fn status_no_profiles_graceful() {
         // With no profiles.toml, should be Ok but may or may not have profiles
         let _ = profiles;
     });
-    assert!(result.is_ok(), "load_profiles should not panic with empty config dir");
+    assert!(
+        result.is_ok(),
+        "load_profiles should not panic with empty config dir"
+    );
 }
 
 #[test]

@@ -1,0 +1,35 @@
+[filters.cargo]
+description = "Compact Cargo build and test output while preserving failures"
+match_command = "^cargo\\b"
+strip_ansi = true
+strip_lines_matching = [
+  "^\\s*$",
+  "^\\s+Compiling ",
+  "^\\s+Checking ",
+  "^\\s+Downloaded ",
+  "^\\s+Finished ",
+  "^\\s+Running (unittests|tests/)",
+  "^test .* \\.\\.\\. ok$",
+]
+max_lines = 120
+truncate_lines_at = 300
+
+[[tests.cargo]]
+name = "failure output keeps the useful failure and removes build progress"
+input = """
+   Compiling my-crate v0.1.0
+   Compiling lib v0.2.0
+    Finished test [unoptimized + debuginfo] target(s) in 2.34s
+     Running unittests src/lib.rs
+
+running 3 tests
+test test_a ... ok
+test test_b ... FAILED
+test test_c ... ok
+
+failures:
+---- test_b stdout ----
+assertion failed
+test result: FAILED. 2 passed; 1 failed
+"""
+expected = "running 3 tests\ntest test_b ... FAILED\nfailures:\n---- test_b stdout ----\nassertion failed\ntest result: FAILED. 2 passed; 1 failed"

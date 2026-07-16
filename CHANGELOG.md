@@ -2,6 +2,20 @@
 
 All notable changes to Toche will be documented in this file.
 
+## [1.0.7] - 2026-07-17
+
+### Fixed
+- Clean public clones now include every filter definition required by `build.rs`
+- Bash tool resolution now preserves subcommands so command-specific filters can match correctly
+- Declared minimum Rust version corrected from 1.85 to 1.86 to match the locked dependency graph
+- Repository-wide Rust formatting aligned with the enforced CI baseline
+
+### Added
+- GitHub Actions checks for formatting, Clippy, Linux tests, Windows tests, and the minimum Rust version
+- Draft-first release workflow for Windows, Linux, Intel macOS, and Apple Silicon macOS archives with SHA-256 checksums
+- Repository-owned status badge artwork and first public release notes
+- Toche-owned Cargo and Git diff filters, bringing the committed built-in inventory to 65
+
 ## [1.0.6] - 2026-07-17
 
 ### Added

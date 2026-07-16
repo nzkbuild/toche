@@ -1,0 +1,22 @@
+[filters.git-diff]
+description = "Compact Git diff output while preserving file, hunk, and changed-line context"
+match_command = "^git\\s+diff\\b"
+strip_ansi = true
+strip_lines_matching = [
+  "^--- a/",
+  "^\\+\\+\\+ b/",
+]
+max_lines = 160
+truncate_lines_at = 400
+
+[[tests.git-diff]]
+name = "diff removes redundant old and new path headers"
+input = """
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1 +1 @@
+-foo
++bar
+"""
+expected = "diff --git a/src/main.rs b/src/main.rs\n@@ -1 +1 @@\n-foo\n+bar"

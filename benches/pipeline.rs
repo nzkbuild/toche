@@ -36,13 +36,15 @@ fn bench_reduce_body(c: &mut Criterion) {
         command_bypass: vec![],
     };
     c.bench_function("reduce_body_multi_tool", |b| {
-        b.iter(|| reduce::transform::reduce_body(black_box(body), black_box(&cfg), black_box(false)))
+        b.iter(|| {
+            reduce::transform::reduce_body(black_box(body), black_box(&cfg), black_box(false))
+        })
     });
 }
 
 fn bench_safe_cache_workspace_fingerprint(c: &mut Criterion) {
     c.bench_function("workspace_fingerprint", |b| {
-        b.iter(|| safe_cache::workspace::compute_workspace_fingerprint())
+        b.iter(safe_cache::workspace::compute_workspace_fingerprint)
     });
 }
 

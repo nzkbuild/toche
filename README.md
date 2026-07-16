@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/branding/toche-status.svg" alt="Toche 1.0.6, built with Rust, for Claude Code, local gateway, Apache-2.0" width="820">
+  <img src="assets/branding/toche-status.svg" alt="Toche 1.0.7, built with Rust, for Claude Code, local gateway, Apache-2.0" width="820">
 </p>
 
 <p align="center">
@@ -41,7 +41,7 @@ off when you want the raw path.
 | | Outcome | How Toche helps |
 |---|---|---|
 | **Avoid repeated work** | Fewer duplicate upstream calls | Identical in-flight requests share one response. Eligible text-only responses can also be replayed from a workspace-aware persistent cache. |
-| **Keep context cleaner** | Less command noise in the conversation | Built-in filters trim known noise from Cargo, Git, test runners, linters, package managers, Docker, and other tools. Original output remains recoverable. |
+| **Keep context cleaner** | Less command noise in the conversation | Built-in filters trim known noise from Cargo, Git, Terraform, Helm, Ansible, linters, and other tools. Original output remains recoverable. |
 | **Use provider caching deliberately** | Less manual cache plumbing | Toche detects prompt-cache breakpoints, supports observe mode, and can inject `cache_control` automatically. |
 | **Understand usage** | A local record of what happened | The SQLite ledger records token counts, cache activity, coalescing, reduction savings, latency, and estimated cost. |
 | **Resume with less friction** | Useful state survives a fresh session | Checkpoints preserve goals, completed work, next steps, changed files, and verification notes. |
@@ -52,7 +52,7 @@ Graphify adapter for local project-graph queries.
 
 ## Quick start
 
-Toche currently builds from source. You need Rust 1.85 or newer and Claude Code.
+Toche currently builds from source. You need Rust 1.86 or newer and Claude Code.
 
 ### Windows PowerShell
 
@@ -294,7 +294,7 @@ gateway is stopped, inspect `~/.claude/settings.json` and its Toche backup.
 
 ## Requirements
 
-- Rust 1.85 or newer, edition 2024
+- Rust 1.86 or newer, edition 2024
 - Claude Code or another Anthropic Messages API client
 - No hosted Toche service
 - SQLite is bundled through `rusqlite`
@@ -302,7 +302,7 @@ gateway is stopped, inspect `~/.claude/settings.json` and its Toche backup.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md): pipeline, modules, databases, and storage
-- [Changelog](CHANGELOG.md): release history from 0.1.0 through 1.0.6
+- [Changelog](CHANGELOG.md): release history from 0.1.0 through 1.0.7
 - [Bug tracker](docs/BUG_TRACKER.md): issues found and fixed during dogfooding
 - [Third-party notices](THIRD_PARTY_NOTICES.md): reused ideas, integration decisions, and attribution
 

@@ -212,8 +212,15 @@ fn no_backup_disconnect_removes_toche_entries() {
     let raw = std::fs::read_to_string(&settings_path).unwrap();
     let cleaned: serde_json::Value = serde_json::from_str(&raw).unwrap();
 
-    assert!(cleaned.get("baseURL").is_none(), "baseURL should be removed");
-    assert_eq!(cleaned["other"], serde_json::json!("keep-me"), "unrelated fields preserved");
+    assert!(
+        cleaned.get("baseURL").is_none(),
+        "baseURL should be removed"
+    );
+    assert_eq!(
+        cleaned["other"],
+        serde_json::json!("keep-me"),
+        "unrelated fields preserved"
+    );
 
     // env should still exist (OTHER_VAR still present, so not empty)
     let env = cleaned.get("env").unwrap();

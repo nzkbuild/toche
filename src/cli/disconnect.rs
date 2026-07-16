@@ -55,16 +55,19 @@ async fn disconnect_claude() -> anyhow::Result<()> {
             let mut settings =
                 utils::read_jsonc(&settings_path).context("Failed to parse settings.json")?;
             if let Some(obj) = settings.as_object_mut() {
-                if obj.get("env").map(|e| e.as_object().map(|o| o.is_empty()).unwrap_or(false)).unwrap_or(false) {
+                if obj
+                    .get("env")
+                    .map(|e| e.as_object().map(|o| o.is_empty()).unwrap_or(false))
+                    .unwrap_or(false)
+                {
                     obj.remove("env");
                 }
             }
             let content = serde_json::to_string_pretty(&settings)?;
             utils::atomic_write(&settings_path, &content)?;
         }
-        let _ = std::fs::remove_file(
-            crate::profiles::loader::config_dir().join("pre_toche_url.txt"),
-        );
+        let _ =
+            std::fs::remove_file(crate::profiles::loader::config_dir().join("pre_toche_url.txt"));
         println!("Removed Toche baseURL from Claude Code settings.");
     }
 

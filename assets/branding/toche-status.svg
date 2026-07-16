@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="920" height="48" viewBox="0 0 920 48" role="img" aria-labelledby="title desc">
   <title id="title">Toche project status</title>
-  <desc id="desc">Version 1.0.6, built with Rust, works with Claude Code, runs as a local gateway, licensed Apache-2.0.</desc>
+  <desc id="desc">Version 1.0.7, built with Rust, works with Claude Code, runs as a local gateway, licensed Apache-2.0.</desc>
   <defs>
     <linearGradient id="toche-gradient" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0" stop-color="#22d3ee"/>
@@ -17,7 +17,7 @@
     <rect x="717" y="1" width="202" height="46" rx="10"/>
   </g>
   <g font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" text-anchor="middle">
-    <text x="78" y="29" fill="#f8fafc"><tspan fill="#94a3b8">VERSION</tspan><tspan dx="8" font-weight="700">1.0.6</tspan></text>
+    <text x="78" y="29" fill="#f8fafc"><tspan fill="#94a3b8">VERSION</tspan><tspan dx="8" font-weight="700">1.0.7</tspan></text>
     <text x="229" y="29" fill="#f8fafc"><tspan fill="#94a3b8">BUILT</tspan><tspan dx="8" font-weight="700">RUST</tspan></text>
     <text x="401" y="29" fill="#f8fafc"><tspan fill="#94a3b8">FOR</tspan><tspan dx="8" font-weight="700">CLAUDE CODE</tspan></text>
     <text x="608" y="29" fill="#f8fafc"><tspan fill="#94a3b8">RUNS</tspan><tspan dx="8" font-weight="700">LOCALLY</tspan></text>

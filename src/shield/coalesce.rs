@@ -33,6 +33,12 @@ pub struct CoalesceStore {
     pending: Mutex<HashMap<String, broadcast::Sender<Option<CapturedResponse>>>>,
 }
 
+impl Default for CoalesceStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CoalesceStore {
     pub fn new() -> Self {
         Self {

@@ -86,10 +86,11 @@ pub fn reduce_body(
                 .and_then(Value::as_str)
                 .unwrap_or("");
 
-            let literal_name = tool_name_map.get(tool_use_id).map(|s| s.as_str()).unwrap_or("");
-            let effective_name = effective_cmd_map
+            let literal_name = tool_name_map
                 .get(tool_use_id)
-                .map(|s| s.as_str());
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            let effective_name = effective_cmd_map.get(tool_use_id).map(|s| s.as_str());
 
             // Check bypass list (exact match on tool name).
             if !literal_name.is_empty() && config.command_bypass.iter().any(|b| b == literal_name) {
@@ -157,8 +158,8 @@ const CLI_PROXY_TOOLS: &[&str] = &["Bash"];
 /// Extract the effective command from a `tool_use` input block.
 ///
 /// For `Bash` tools, reads `input.command`, strips common prefixes (`sudo`,
-/// `rtk`), and returns the first word of the remaining command as the
-/// effective tool name (e.g. `"cargo test --lib"` → `"cargo"`).
+/// `rtk`), and returns the remaining command line so filters can distinguish
+/// subcommands (e.g. `"git diff"` from `"git status"`).
 ///
 /// Returns `None` when no command can be extracted or the tool is not a
 /// recognized CLI proxy.
@@ -172,17 +173,16 @@ fn resolve_command(tool_name: &str, input: &Value) -> Option<String> {
         .trim_start()
         .trim_start_matches("sudo ")
         .trim_start_matches("rtk ");
-    let first_word = cmd.split_whitespace().next()?;
-    if first_word.is_empty() {
+    if cmd.is_empty() {
         return None;
     }
-    Some(first_word.to_string())
+    Some(cmd.to_string())
 }
 
 /// Build two maps from `tool_use.id`:
 ///   - `tool_name`: the literal Anthropic tool name (e.g. `"Bash"`, `"Read"`)
-///   - `effective_cmd`: the resolved CLI command when available (e.g. `"cargo"`,
-///     `"git"`), otherwise absent
+///   - `effective_cmd`: the resolved CLI command line when available (e.g.
+///     `"cargo test --lib"`, `"git diff"`), otherwise absent
 fn build_tool_map(root: &Value) -> (HashMap<String, String>, HashMap<String, String>) {
     let mut tool_name = HashMap::new();
     let mut effective_cmd = HashMap::new();
@@ -411,9 +411,19 @@ mod tests {
   ]
 }"#;
         let r = reduce_body(body, &make_config(), false).expect("should succeed");
-        assert!(r.reductions > 0, "Bash→cargo should be reduced, got reductions={}", r.reductions);
-        assert!(r.modified_body.contains("toche:reduced"), "should contain reduction marker");
-        assert!(r.tokens_reduced < r.tokens_raw, "reduced tokens should be less than raw");
+        assert!(
+            r.reductions > 0,
+            "Bash→cargo should be reduced, got reductions={}",
+            r.reductions
+        );
+        assert!(
+            r.modified_body.contains("toche:reduced"),
+            "should contain reduction marker"
+        );
+        assert!(
+            r.tokens_reduced < r.tokens_raw,
+            "reduced tokens should be less than raw"
+        );
     }
 
     #[test]
@@ -432,7 +442,11 @@ mod tests {
   ]
 }"#;
         let r = reduce_body(body, &make_config(), false).expect("should succeed");
-        assert!(r.reductions > 0, "Bash→git should be reduced, got reductions={}", r.reductions);
+        assert!(
+            r.reductions > 0,
+            "Bash→git should be reduced, got reductions={}",
+            r.reductions
+        );
         assert!(r.modified_body.contains("toche:reduced"));
     }
 
@@ -494,6 +508,9 @@ mod tests {
   ]
 }"#;
         let r = reduce_body(body, &make_config(), false).expect("should succeed");
-        assert!(r.reductions > 0, "literal shellcheck should still be reduced");
+        assert!(
+            r.reductions > 0,
+            "literal shellcheck should still be reduced"
+        );
     }
 }

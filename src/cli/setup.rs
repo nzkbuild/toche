@@ -15,7 +15,10 @@ pub async fn run(force: bool) -> anyhow::Result<()> {
 
     // Guard against silently destroying existing user configuration.
     if profiles_path.exists() && !force {
-        println!("profiles.toml already exists at {}", profiles_path.display());
+        println!(
+            "profiles.toml already exists at {}",
+            profiles_path.display()
+        );
         println!();
         println!("Running setup again would overwrite your custom profiles, API keys,");
         println!("and model configuration. If you want to regenerate the default config,");
@@ -27,10 +30,7 @@ pub async fn run(force: bool) -> anyhow::Result<()> {
         let bak_path = dir.join("profiles.toml.bak");
         std::fs::copy(&profiles_path, &bak_path)
             .context("Failed to backup existing profiles.toml")?;
-        println!(
-            "Existing profiles.toml backed up to {}",
-            bak_path.display()
-        );
+        println!("Existing profiles.toml backed up to {}", bak_path.display());
     }
 
     // Detect existing Claude Code gateway configuration

@@ -2,9 +2,9 @@
 //! Vendored and adapted from RTK (Apache-2.0).
 //!
 //! Provides a declarative pipeline of 8 stages that can be configured
-//! via TOML files. Only the built-in filter set (63 filters from
-//! vendor_reuse/rtk/src/filters/*.toml, concatenated by build.rs) is
-//! loaded — disk-based project/user filters are not supported in Toche.
+//! via TOML files. Only the committed built-in filter set (63 definitions from
+//! the pinned RTK commit plus Toche-owned filters) is loaded. build.rs combines
+//! the files at compile time; disk-based project/user filters are not supported.
 //!
 //! Pipeline stages (applied in order):
 //!   1. strip_ansi           — remove ANSI escape codes
@@ -22,7 +22,7 @@ use regex::{Regex, RegexSet};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-// Built-in filters: concatenated from vendor_reuse/rtk/src/filters/*.toml by build.rs.
+// Built-in filters: concatenated from assets/filters/**/*.toml by build.rs.
 const BUILTIN_TOML: &str = include_str!(concat!(env!("OUT_DIR"), "/builtin_filters.toml"));
 
 // ---------------------------------------------------------------------------
@@ -584,11 +584,7 @@ mod tests {
     #[test]
     fn test_builtin_filter_count() {
         let filters = make_filters(BUILTIN_TOML);
-        assert!(
-            filters.len() >= 70,
-            "Expected at least 70 built-in filters, got {}.",
-            filters.len()
-        );
+        assert_eq!(filters.len(), 65, "Built-in filter inventory changed");
     }
 
     #[test]

@@ -33,8 +33,9 @@ content-addressed storage (`~/.toche/cas/`).
 Applies TOML-defined filter pipelines to tool result content blocks in the
 request body. Reduces token count by stripping noise from command outputs
 (compilation progress, passing tests, download bars, etc.). Original content
-is preserved in CAS for `toche expand` recovery. 63 built-in filters from
-RTK cover cargo, git, npm/pnpm, pytest, ruff, go, docker, and more.
+is preserved in CAS for `toche expand` recovery. The committed inventory has
+65 built-in filters: 63 definitions imported from the pinned RTK source plus
+Toche-owned Cargo and Git diff filters.
 
 ### Stage 5: Efficiency (`src/efficiency/`)
 

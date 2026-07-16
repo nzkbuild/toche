@@ -7,35 +7,25 @@ use crate::reduce::config::ReduceConfig;
 use crate::safe_cache::config::SafeCacheConfig;
 
 /// Controls how Toche manages provider prompt caching for a profile.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheMode {
     /// Log what breakpoints would be set, but don't modify requests.
+    #[default]
     Observe,
     /// Inject cache_control breakpoints into outgoing requests.
     Auto,
 }
 
-impl Default for CacheMode {
-    fn default() -> Self {
-        Self::Observe
-    }
-}
-
 /// Which parts of the conversation get cache breakpoints.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheBreakpoint {
     /// Cache the system prompt and consecutive non-tool user+assistant message runs.
+    #[default]
     Standard,
     /// Cache only the system prompt.
     SystemOnly,
-}
-
-impl Default for CacheBreakpoint {
-    fn default() -> Self {
-        Self::Standard
-    }
 }
 
 /// Per-profile cache coordination configuration.
