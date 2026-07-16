@@ -11,9 +11,9 @@
   trims noisy tool output, coordinates caching, and shows where the tokens went.
 </p>
 
-| Version | Built with | Works with | Runs as | License |
-|:-------:|:----------:|:----------:|:-------:|:-------:|
-| **1.0.6** | **Rust** | **Claude Code** | **Local gateway** | **Apache-2.0** |
+<p align="center">
+  <img src="assets/branding/toche-status.svg" alt="Toche 1.0.6, built with Rust, for Claude Code, local gateway, Apache-2.0" width="820">
+</p>
 
 <p align="center">
   <a href="#why-toche">Why Toche</a> ·
