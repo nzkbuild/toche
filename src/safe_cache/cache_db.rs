@@ -6,6 +6,7 @@ use std::path::Path;
 /// A row read back from the safe_cache table.
 #[derive(Debug, Clone)]
 pub struct CacheEntry {
+    #[allow(dead_code)] // public field for external inspection
     pub id: i64,
     pub project_path: String,
     pub fingerprint: String,
@@ -321,6 +322,7 @@ impl CacheDb {
     }
 
     /// Count rejected candidates, optionally filtered by project.
+    #[allow(dead_code)] // public API for stats/status
     pub fn count_rejects(&self, project_path: Option<&str>) -> Result<u64> {
         let count: i64 = match project_path {
             Some(p) => self.conn.query_row(
@@ -346,6 +348,7 @@ impl CacheDb {
     }
 
     /// Total number of cache entries, optionally filtered by project.
+    #[allow(dead_code)] // public API for stats/status
     pub fn count(&self, project_path: Option<&str>) -> Result<u64> {
         let count: i64 = match project_path {
             Some(p) => self.conn.query_row(

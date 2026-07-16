@@ -79,6 +79,13 @@ async fn connect_claude() -> anyhow::Result<()> {
         serde_json::json!({})
     };
 
+    // Persist the original upstream URL before overwriting, so disconnect can
+    // restore it even if the backup file is deleted.
+    let original_env_url = settings
+        .pointer("/env/ANTHROPIC_BASE_URL")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     // Set Toche as base URL (both top-level and env block — env takes precedence
     // in Claude Code, but we set both so disconnect can restore cleanly).
     if let Some(obj) = settings.as_object_mut() {
@@ -101,6 +108,14 @@ async fn connect_claude() -> anyhow::Result<()> {
     // Atomic write back
     let content = serde_json::to_string_pretty(&settings)?;
     utils::atomic_write(&settings_path, &content)?;
+
+    // Save the original ANTHROPIC_BASE_URL so disconnect can restore it even
+    // if the backup file is deleted. Stored inside ~/.toche/ not alongside
+    // settings.json, so it's less likely to be accidentally removed.
+    if let Some(ref url) = original_env_url {
+        let saved_path = crate::profiles::loader::config_dir().join("pre_toche_url.txt");
+        let _ = std::fs::write(&saved_path, url);
+    }
 
     println!("Claude Code now routing through Toche ({TOCHE_URL}).");
     println!("Backup saved to: {}", backup_path.display());

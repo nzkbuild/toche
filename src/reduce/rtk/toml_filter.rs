@@ -1,5 +1,5 @@
 //! Applies TOML-defined filter rules to command output.
-//! Vendored and adapted from RTK (Apache-2.0) for Toche 0.5.0.
+//! Vendored and adapted from RTK (Apache-2.0).
 //!
 //! Provides a declarative pipeline of 8 stages that can be configured
 //! via TOML files. Only the built-in filter set (63 filters from
@@ -47,6 +47,7 @@ struct ReplaceRule {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)] // vendored test infra, unused in Toche's integration path
 pub struct TomlFilterTestDef {
     pub name: String,
     pub input: String,
@@ -54,6 +55,7 @@ pub struct TomlFilterTestDef {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)] // tests field unused in Toche's integration path
 struct TomlFilterFile {
     schema_version: u32,
     #[serde(default)]
@@ -113,6 +115,7 @@ enum LineFilter {
 /// A filter that has been parsed and compiled — all regexes are ready.
 #[derive(Debug)]
 pub struct CompiledFilter {
+    #[allow(dead_code)] // vendored, preserved for upstream sync
     pub name: String,
     #[allow(dead_code)]
     pub description: Option<String>,
@@ -127,6 +130,7 @@ pub struct CompiledFilter {
     pub max_lines: Option<usize>,
     on_empty: Option<String>,
     /// When true, stderr should be captured and merged with stdout.
+    #[allow(dead_code)] // vendored, preserved for upstream sync
     pub filter_stderr: bool,
 }
 
@@ -230,6 +234,7 @@ const RUST_HANDLED_COMMANDS: &[&str] = &[
     "learn",
 ];
 
+#[allow(dead_code)] // vendored, kept for upstream sync
 pub fn is_rtk_reserved_command(name: &str) -> bool {
     RUST_HANDLED_COMMANDS.contains(&name) || RTK_META_COMMANDS.contains(&name)
 }
@@ -371,6 +376,7 @@ pub fn find_filter_in<'a>(
 }
 
 /// Apply a compiled filter pipeline to raw stdout. Pure String -> String.
+#[allow(dead_code)] // vendored, kept for type consistency
 pub fn apply_filter(filter: &CompiledFilter, stdout: &str) -> String {
     apply_filter_with_info(filter, stdout).0
 }

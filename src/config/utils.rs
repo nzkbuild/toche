@@ -26,6 +26,7 @@ pub fn atomic_write_secure(path: &Path, content: &str) -> anyhow::Result<()> {
 }
 
 /// Set restrictive permissions on the config directory (0o700 on Unix).
+#[allow(dead_code)] // public API, may be used externally
 pub fn secure_dir(path: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(path)?;
     restrict_dir_permissions(path)?;
@@ -52,6 +53,7 @@ fn restrict_dir_permissions(path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)] // used in cfg(unix) branch
 fn restrict_dir_permissions(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }

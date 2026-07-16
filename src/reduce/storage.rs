@@ -61,6 +61,7 @@ pub fn delete(hash: &str) -> bool {
 }
 
 /// Check whether a blob exists for the given hash.
+#[allow(dead_code)] // public API, may be used by cache management UIs
 pub fn exists(hash: &str) -> bool {
     if hash.len() < 2 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
         return false;
@@ -74,7 +75,7 @@ mod tests {
 
     #[test]
     fn roundtrip_store_retrieve() {
-        let data = b"hello world from toche 0.5.0";
+        let data = b"hello world from toche";
         let hash = store(data).expect("store should succeed");
         let retrieved = retrieve(&hash).expect("retrieve should succeed");
         assert_eq!(retrieved, data);

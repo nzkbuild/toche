@@ -489,7 +489,7 @@ pub async fn messages(
     let reduction_output = forwarded.reduction_output_tokens;
     let reduction_count = forwarded.reduction_count;
     let efficiency_mode = forwarded.efficiency_mode;
-    let efficiency_tokens_added = forwarded.efficiency_tokens_added;
+    let _efficiency_tokens_added = forwarded.efficiency_tokens_added;
     tokio::spawn(async move {
         let db_path = config_dir().join("ledger.db");
         let db = match LedgerDb::open(&db_path) {

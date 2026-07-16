@@ -5,6 +5,7 @@ pub struct SafetyVerdict {
     /// Why the response was deemed unsafe (empty if safe).
     pub reason: String,
     /// Number of tool_use blocks found (0 if safe).
+    #[allow(dead_code)] // public field for external inspection
     pub tool_use_count: usize,
 }
 

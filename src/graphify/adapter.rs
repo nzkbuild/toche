@@ -90,6 +90,7 @@ impl GraphifyAdapter {
         self.run(&["extract", target])
     }
 
+    #[allow(dead_code)] // public API for future use
     pub fn update(&self, path: Option<&str>) -> GraphifyResult {
         let target = path.unwrap_or(".");
         self.run(&["update", target])

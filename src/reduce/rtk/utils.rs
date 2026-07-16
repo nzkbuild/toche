@@ -25,6 +25,7 @@ pub fn truncate(s: &str, max_len: usize) -> String {
 }
 
 /// Format a token count with K/M suffix for human-readable output.
+#[allow(dead_code)] // vendored, kept for upstream sync
 pub fn format_tokens(n: usize) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)

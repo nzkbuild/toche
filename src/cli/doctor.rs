@@ -1,3 +1,4 @@
+use crate::cli::connect::points_to_toche;
 use crate::profiles::loader::config_dir;
 
 pub async fn run() -> anyhow::Result<()> {
@@ -43,15 +44,14 @@ pub async fn run() -> anyhow::Result<()> {
                     .get("baseURL")
                     .and_then(|v| v.as_str())
                     .unwrap_or("not set");
-                let points_to_toche = base_url.contains("127.0.0.1:8743");
-                println!(
-                    "  baseURL: {base_url} {}",
-                    if points_to_toche {
-                        "(points to Toche)"
-                    } else {
-                        ""
-                    }
-                );
+                let env_url = settings
+                    .pointer("/env/ANTHROPIC_BASE_URL")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("not set");
+                let pointing_to_toche = points_to_toche(&settings);
+                println!("  baseURL: {base_url}");
+                println!("  env.ANTHROPIC_BASE_URL: {env_url}");
+                println!("  points to Toche: {pointing_to_toche}");
             }
             Err(e) => {
                 println!("  error reading settings.json: {e}");

@@ -1,16 +1,21 @@
 //! Global truncation caps shared by every filter. Vendored from RTK.
 
 /// Errors: most actionable, shown the most.
+#[allow(dead_code)] // vendored, kept for upstream sync
 pub const CAP_ERRORS: usize = 20;
 /// Warnings and test failures: lower signal density than errors.
+#[allow(dead_code)]
 pub const CAP_WARNINGS: usize = 10;
 /// Flat lists (PRs, services, packages): one line per item.
+#[allow(dead_code)]
 pub const CAP_LIST: usize = 20;
 /// Inventories (`pip list`, `docker images`): exhaustive lookups.
+#[allow(dead_code)]
 pub const CAP_INVENTORY: usize = 50;
 
 /// A cap reduced for a verbose data class. Falls back to `cap` when `by >= cap`
 /// so a deviation can never empty the list; `0` stays `0`. `const fn`, underflow-safe.
+#[allow(dead_code)] // vendored, kept for upstream sync
 pub const fn reduced(cap: usize, by: usize) -> usize {
     if by < cap { cap - by } else { cap }
 }

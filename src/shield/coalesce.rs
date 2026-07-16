@@ -76,6 +76,7 @@ impl CoalesceStore {
     }
 
     /// Remove a failed request so waiters receive `Failed`.
+    #[allow(dead_code)] // public API for panic recovery
     pub fn cancel(&self, key: &str) {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(sender) = pending.remove(key) {
