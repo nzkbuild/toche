@@ -6,7 +6,7 @@ on:
       tag:
         description: Release tag to create or verify
         required: true
-        default: v1.0.7
+        default: v1.0.8
         type: string
 
 permissions:
@@ -213,7 +213,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         shell: bash
-        run: gh release upload "$RELEASE_TAG" dist/* --clobber
+        run: |
+          shopt -s nullglob
+          assets=(dist/*.tar.gz dist/*.zip dist/*.sha256)
+          test "${#assets[@]}" -gt 0
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
 
   npm-package:
     name: Package npm installer

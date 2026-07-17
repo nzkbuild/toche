@@ -2,6 +2,19 @@
 
 All notable changes to Toche will be documented in this file.
 
+## [1.0.8] - 2026-07-17
+
+### Fixed
+- Release packaging now uploads only archives and checksum files instead of also passing build directories to GitHub
+- Preserved the existing `v1.0.7` tag after it was created by an earlier draft-release attempt
+
+### Added
+- npm installer package that exposes the native binary as the global `toche` command on supported platforms
+
+### Changed
+- Reworked the README around measurable outcomes, numbered installation, normal daily use, and clearly optional commands
+- Added npm package checks and an npm tarball to the draft release workflow
+
 ## [1.0.7] - 2026-07-17
 
 ### Fixed
@@ -15,12 +28,6 @@ All notable changes to Toche will be documented in this file.
 - Draft-first release workflow for Windows, Linux, Intel macOS, and Apple Silicon macOS archives with SHA-256 checksums
 - Repository-owned status badge artwork and first public release notes
 - Toche-owned Cargo and Git diff filters, bringing the committed built-in inventory to 65
-- npm installer package that exposes the native binary as the global `toche` command on supported platforms
-
-### Changed
-- Reworked the README around measurable outcomes, numbered installation, normal daily use, and clearly optional commands
-- Added npm package checks and an npm tarball to the draft release workflow
-
 ## [1.0.6] - 2026-07-17
 
 ### Added
