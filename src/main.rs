@@ -16,6 +16,7 @@ mod shield;
 #[derive(Parser)]
 #[command(
     name = "toche",
+    version,
     about = "Local context-efficiency gateway for Claude Code"
 )]
 struct Cli {

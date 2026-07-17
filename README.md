@@ -3,22 +3,22 @@
 </p>
 
 <p align="center">
-  <strong>Spend less context on noise. Keep more of the work.</strong>
+  <strong>Claude Code repeats less, carries less noise, and leaves you a receipt.</strong>
 </p>
 
 <p align="center">
-  A local efficiency gateway for Claude Code that helps avoid repeated API work,
-  trims noisy tool output, coordinates caching, and shows where the tokens went.
+  Toche is a local gateway between Claude Code and your Anthropic API endpoint.
+  It removes avoidable work while keeping every optimization visible and reversible.
 </p>
 
 <p align="center">
-  <img src="assets/branding/toche-status.svg" alt="Toche 1.0.7, built with Rust, for Claude Code, local gateway, Apache-2.0" width="820">
+  <img src="assets/branding/toche-status.svg" alt="Toche 1.0.7: 65 filters, duplicate requests coalesced from many to one, zero hosted accounts, 354 Rust tests" width="820">
 </p>
 
 <p align="center">
   <a href="#why-toche">Why Toche</a> ·
-  <a href="#what-it-does">What it does</a> ·
-  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-changes">What changes</a> ·
+  <a href="#install">Install</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#command-reference">Commands</a> ·
   <a href="#safety-and-control">Safety</a> ·
@@ -27,86 +27,125 @@
 
 ## Why Toche
 
-Claude Code can do excellent work while quietly accumulating duplicate requests,
-large command output, and context that stopped being useful several thousand tokens
-ago. Toche sits between Claude Code and your configured Anthropic API endpoint and
-handles that housekeeping locally.
+Claude Code sessions often pay for the same kind of waste more than once: an
+identical request is already running, a safe response was just fetched, or a tool
+prints thousands of tokens when the useful result is a few lines. Toche handles
+those cases before they consume another upstream call or more conversation space.
 
-There is no hosted Toche service and no second dashboard asking you to create an
-account. You run the gateway, you choose the optimizations, and you can turn them
-off when you want the raw path.
+The useful part is not a universal marketing percentage. Toche measures your
+actual traffic and reports what happened with `toche stats`.
 
-## What it does
+## What changes
 
-| | Outcome | How Toche helps |
-|---|---|---|
-| **Avoid repeated work** | Fewer duplicate upstream calls | Identical in-flight requests share one response. Eligible text-only responses can also be replayed from a workspace-aware persistent cache. |
-| **Keep context cleaner** | Less command noise in the conversation | Built-in filters trim known noise from Cargo, Git, Terraform, Helm, Ansible, linters, and other tools. Original output remains recoverable. |
-| **Use provider caching deliberately** | Less manual cache plumbing | Toche detects prompt-cache breakpoints, supports observe mode, and can inject `cache_control` automatically. |
-| **Understand usage** | A local record of what happened | The SQLite ledger records token counts, cache activity, coalescing, reduction savings, latency, and estimated cost. |
-| **Resume with less friction** | Useful state survives a fresh session | Checkpoints preserve goals, completed work, next steps, changed files, and verification notes. |
-| **Stay in control** | Optimizations are inspectable and reversible | Bypass headers, cache inspection, output recovery, `doctor`, and `disconnect` keep the machinery visible. |
+- **Three identical requests at the same time can become one upstream call.** The
+  first request runs while the other two wait for and share its response.
+- **An eligible local replay becomes zero new upstream calls.** Toche only replays
+  workspace-matched, text-only responses that pass its safety checks.
+- **Sixty-five command filters remove known noise.** Cargo, Git, Terraform, Helm,
+  Ansible, linters, and other supported output can be shortened while the original
+  remains recoverable with `toche expand`.
+- **Every routed request leaves a local record.** Token counts, estimated cost,
+  latency, cache decisions, coalescing, and reduction are written to a local SQLite
+  ledger instead of a Toche cloud account.
 
-Toche also includes `concise` and `careful` efficiency profiles and an optional
-Graphify adapter for local project-graph queries.
+Here is a deliberately simple example. If a supported tool prints an estimated
+10,000 tokens and its useful reduced form is 3,000, the ledger records 7,000 tokens
+removed, or 70%. That explains the measurement. It does not promise that every
+command, repository, or session will save 70%.
 
-## Quick start
+Toche is most useful during long coding sessions, repeated test and diff cycles,
+parallel agent work, and projects where you want to inspect the cost of the work.
+A short conversation with no repetition or noisy tools may show little difference.
 
-Toche currently builds from source. You need Rust 1.86 or newer and Claude Code.
+## Install
 
-### Windows PowerShell
+### Before you start
 
-```powershell
+You need:
+
+1. Claude Code installed and already working.
+2. Node.js 18 or newer for the npm installer.
+3. Windows x64, Linux x64, macOS Intel, or macOS Apple silicon.
+
+Rust is not required when installing from npm.
+
+### One-time setup
+
+1. Install Toche globally. This makes the `toche` command available anywhere.
+
+   ```shell
+   npm install -g toche
+   ```
+
+2. Import your existing Claude Code endpoint into a local Toche profile.
+
+   ```shell
+   toche setup
+   ```
+
+3. Start Toche and leave this terminal open while using Claude Code.
+
+   ```shell
+   toche
+   ```
+
+4. Open a second terminal, connect Claude Code, and verify the setup.
+
+   ```shell
+   toche connect
+   toche doctor
+   ```
+
+5. Start Claude Code normally.
+
+   ```shell
+   claude
+   ```
+
+`toche connect` creates a backup before changing Claude Code's local routing.
+
+### Normal daily use
+
+After the one-time setup, the routine is only:
+
+1. Run `toche` and leave it open.
+2. Run `claude` in another terminal.
+
+You do not need to run `setup` again. You also do not need to run `connect` again
+unless you previously used `toche disconnect`.
+
+### Use these only when needed
+
+| Command | When to use it |
+|---|---|
+| `toche stats` | You want to see requests, tokens, estimated cost, and measured savings |
+| `toche doctor` | Something is not connecting or you want a health check |
+| `toche disconnect` | You want Claude Code to bypass Toche and use its original endpoint |
+| `toche setup --force` | You intentionally want to replace the current Toche profile; a backup is created |
+
+To uninstall cleanly, restore Claude Code's original route first:
+
+```shell
+toche disconnect
+npm uninstall -g toche
+```
+
+<details>
+<summary><strong>Build from source instead of npm</strong></summary>
+
+You need Rust 1.86 or newer.
+
+```shell
 git clone https://github.com/nzkbuild/toche.git
 cd toche
 cargo build --release
-
-# Import your existing Claude Code configuration
-.\target\release\toche.exe setup
-
-# Start the gateway and leave this terminal open
-.\target\release\toche.exe
 ```
 
-Open a second PowerShell window in the repository:
+The binary is `target/release/toche` on Linux and macOS or
+`target\release\toche.exe` on Windows. Run that binary with the same numbered setup
+steps above.
 
-```powershell
-.\target\release\toche.exe connect
-.\target\release\toche.exe doctor
-```
-
-Use Claude Code normally. When you want to return to direct upstream routing:
-
-```powershell
-.\target\release\toche.exe disconnect
-```
-
-### Linux or macOS
-
-```bash
-git clone https://github.com/nzkbuild/toche.git
-cd toche
-cargo build --release
-
-# Import your existing Claude Code configuration
-./target/release/toche setup
-
-# Start the gateway and leave this terminal open
-./target/release/toche
-```
-
-Open a second terminal in the repository:
-
-```bash
-./target/release/toche connect
-./target/release/toche doctor
-```
-
-Use Claude Code normally. To restore direct upstream routing:
-
-```bash
-./target/release/toche disconnect
-```
+</details>
 
 ## How it works
 
@@ -125,7 +164,17 @@ flowchart LR
     B --> A
 ```
 
-At request level, the pipeline is:
+In plain language, Claude Code sends its normal Anthropic Messages API request to
+Toche on `127.0.0.1:8743`. Toche then:
+
+1. Gives the request a stable fingerprint.
+2. Shares an already-running identical request or checks for an eligible local replay.
+3. Shortens supported tool output and keeps the original locally recoverable.
+4. Applies the selected efficiency and provider prompt-cache policy.
+5. Forwards any remaining work to your configured Anthropic API endpoint.
+6. Records the outcome locally so `toche stats` can explain it.
+
+The exact internal order is:
 
 ```text
 fingerprint -> shield -> safe cache -> reduce -> efficiency -> cache -> forward -> ledger
@@ -304,6 +353,7 @@ gateway is stopped, inspect `~/.claude/settings.json` and its Toche backup.
 - [Architecture](docs/ARCHITECTURE.md): pipeline, modules, databases, and storage
 - [Changelog](CHANGELOG.md): release history from 0.1.0 through 1.0.7
 - [Bug tracker](docs/BUG_TRACKER.md): issues found and fixed during dogfooding
+- [npm publishing](docs/NPM_PUBLISHING.md): maintainer checklist for the first npm release
 - [Third-party notices](THIRD_PARTY_NOTICES.md): reused ideas, integration decisions, and attribution
 
 ## Built from good work

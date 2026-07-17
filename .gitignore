@@ -31,3 +31,8 @@ profiles.toml
 
 # Build tool artifacts
 .akar/
+
+# npm package artifacts
+*.tgz
+npm/bin/toche-bin
+npm/bin/toche-bin.exe

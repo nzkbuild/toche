@@ -1,0 +1,50 @@
+{
+  "name": "toche",
+  "version": "1.0.7",
+  "description": "Local efficiency gateway for Claude Code",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nzkbuild/toche.git"
+  },
+  "homepage": "https://github.com/nzkbuild/toche#readme",
+  "bugs": {
+    "url": "https://github.com/nzkbuild/toche/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "anthropic",
+    "context",
+    "cache",
+    "cli",
+    "rust"
+  ],
+  "bin": {
+    "toche": "npm/bin/toche.js"
+  },
+  "files": [
+    "npm/bin/toche.js",
+    "npm/install.js",
+    "npm/install.test.js",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "postinstall": "node npm/install.js",
+    "test:npm": "node --test npm/install.test.js",
+    "check:package": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

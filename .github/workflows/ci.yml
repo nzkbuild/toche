@@ -69,3 +69,22 @@ jobs:
 
       - name: Run tests
         run: cargo +1.86.0 test --all-features --locked
+
+  npm-package:
+    name: Test npm package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Prepare Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "18"
+          package-manager-cache: false
+
+      - name: Test installer logic
+        run: npm run test:npm
+
+      - name: Inspect publish contents
+        run: npm run check:package
