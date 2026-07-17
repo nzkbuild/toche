@@ -18,7 +18,7 @@ verifies the published SHA-256 checksum, and exposes the binary as `toche`.
 3. Check out the exact public release tag and verify both version files agree:
 
    ```shell
-   git checkout v1.0.9
+   git checkout v1.0.10
    node -p 'require("./package.json").version'
    cargo metadata --no-deps --format-version 1
    ```
@@ -41,7 +41,7 @@ verifies the published SHA-256 checksum, and exposes the binary as `toche`.
 6. Verify from a clean environment:
 
    ```shell
-   npm install -g @nzkbuild/toche@1.0.9
+   npm install -g @nzkbuild/toche@1.0.10
    toche --version
    toche --help
    ```
