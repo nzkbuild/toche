@@ -11,7 +11,7 @@ copyright notices, project links, and integration decisions are preserved here.
 | Project | License | Clone commit | Integration | Purpose |
 |---------|---------|-------------|-------------|---------|
 | [ccusage](https://github.com/ccusage/ccusage) | MIT | `ba99c0d` | Reference: adapt pricing/reporting patterns | Usage ledger concepts, pricing models, reporting |
-| [RTK](https://github.com/rtk-ai/rtk) | Apache-2.0 | `5d32d07` | Reference: adapt filter and hook architecture | Command/tool-output reduction, Claude Code hook integration |
+| [RTK](https://github.com/rtk-ai/rtk) | Apache-2.0 | `5d32d0736f686b69d1e8b9dc45c007d4eb77a0a2` | Reference: adapt filter and hook architecture | Command/tool-output reduction, Claude Code hook integration |
 | [Graphify](https://github.com/Graphify-Labs/graphify) | MIT | `43b2aff` | External CLI/MCP adapter | Local project graph and query service |
 | [andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills) | MIT | `2c60614` | Reference: adapt policy rules | Careful-work policy profile (Section 0.6.0) |
 | [caveman-claude](https://github.com/juliusbrussee/caveman) | MIT | `0d95a81` | Reference: adapt concision patterns | Concise response profile, token reduction strategies |

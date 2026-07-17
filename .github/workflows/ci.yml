@@ -38,6 +38,16 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --locked
 
+      - name: Check dependency and licence policy
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo deny check
+
+      - name: Generate dependency attribution report
+        run: |
+          cargo install cargo-about --version 0.9.1 --locked --features cli
+          cargo about generate about.hbs --fail -o /tmp/THIRD_PARTY_DEPENDENCIES.md
+
   windows:
     name: Test on Windows
     runs-on: windows-latest

@@ -3,6 +3,7 @@ name = "toche"
 version = "1.0.10"
 edition = "2024"
 rust-version = "1.86"
+license = "Apache-2.0"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
