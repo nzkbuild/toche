@@ -10,7 +10,7 @@ const binary = path.join(__dirname, executable);
 
 if (!fs.existsSync(binary)) {
   console.error("Toche's native binary is missing.");
-  console.error("Reinstall without --ignore-scripts: npm install -g toche");
+  console.error("Reinstall without --ignore-scripts: npm install -g @nzkbuild/toche");
   process.exit(1);
 }
 

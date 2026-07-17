@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/branding/toche-status.svg" alt="Toche 1.0.8: 65 filters, duplicate requests coalesced from many to one, zero hosted accounts, 354 Rust tests" width="820">
+  <img src="assets/branding/toche-status.svg" alt="Toche 1.0.9: 65 filters, duplicate requests coalesced from many to one, zero hosted accounts, 354 Rust tests" width="820">
 </p>
 
 <p align="center">
@@ -74,7 +74,7 @@ Rust is not required when installing from npm.
 1. Install Toche globally. This makes the `toche` command available anywhere.
 
    ```shell
-   npm install -g toche
+   npm install -g @nzkbuild/toche
    ```
 
 2. Import your existing Claude Code endpoint into a local Toche profile.
@@ -127,7 +127,7 @@ To uninstall cleanly, restore Claude Code's original route first:
 
 ```shell
 toche disconnect
-npm uninstall -g toche
+npm uninstall -g @nzkbuild/toche
 ```
 
 <details>
@@ -351,7 +351,7 @@ gateway is stopped, inspect `~/.claude/settings.json` and its Toche backup.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md): pipeline, modules, databases, and storage
-- [Changelog](CHANGELOG.md): release history from 0.1.0 through 1.0.8
+- [Changelog](CHANGELOG.md): release history from 0.1.0 through 1.0.9
 - [Bug tracker](docs/BUG_TRACKER.md): issues found and fixed during dogfooding
 - [npm publishing](docs/NPM_PUBLISHING.md): maintainer checklist for the first npm release
 - [Third-party notices](THIRD_PARTY_NOTICES.md): reused ideas, integration decisions, and attribution

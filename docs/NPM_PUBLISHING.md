@@ -8,17 +8,17 @@ verifies the published SHA-256 checksum, and exposes the binary as `toche`.
 
 1. Publish the GitHub Release first. The npm installer cannot work until the four
    native archives and their checksum files are publicly downloadable.
-2. Confirm the package name is still available:
+2. Confirm you are signed in as the owner of the `@nzkbuild` scope:
 
    ```shell
-   npm view toche
+   npm whoami
    ```
 
-   A `404 Not Found` response means no package currently owns the name.
+   The command must print `nzkbuild`.
 3. Check out the exact public release tag and verify both version files agree:
 
    ```shell
-   git checkout v1.0.8
+   git checkout v1.0.9
    node -p 'require("./package.json").version'
    cargo metadata --no-deps --format-version 1
    ```
@@ -30,17 +30,18 @@ verifies the published SHA-256 checksum, and exposes the binary as `toche`.
    npm pack --dry-run
    ```
 
-5. Sign in to the npm account that should own `toche`, then publish:
+5. Sign in to the npm account that owns `@nzkbuild`, then publish the public
+   scoped package:
 
    ```shell
    npm login
-   npm publish
+   npm publish --access public
    ```
 
 6. Verify from a clean environment:
 
    ```shell
-   npm install -g toche@1.0.8
+   npm install -g @nzkbuild/toche@1.0.9
    toche --version
    toche --help
    ```
