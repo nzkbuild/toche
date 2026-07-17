@@ -40,12 +40,12 @@ jobs:
 
       - name: Check dependency and licence policy
         run: |
-          cargo install cargo-deny --version 0.20.2 --locked
+          cargo install cargo-deny --git https://github.com/EmbarkStudios/cargo-deny --rev 87da103c554376c89a641116f835a41073a9d774 --locked
           cargo deny check
 
       - name: Generate dependency attribution report
         run: |
-          cargo install cargo-about --version 0.9.1 --locked --features cli
+          cargo install cargo-about --git https://github.com/EmbarkStudios/cargo-about --rev d5b837793cbb01163ce3f754fe51e41a1270ebf9 --locked --features cli
           cargo about generate about.hbs --fail -o /tmp/THIRD_PARTY_DEPENDENCIES.md
 
   windows:

@@ -356,10 +356,10 @@ notes = "Must not be introduced into production runtime code."
 id = "cargo-deny"
 project = "cargo-deny"
 repository = "https://github.com/EmbarkStudios/cargo-deny"
-revision = "0.20.2"
-revision_type = "crate"
+revision = "87da103c554376c89a641116f835a41073a9d774"
+revision_type = "commit"
 license = "MIT OR Apache-2.0"
-license_file = "https://crates.io/crates/cargo-deny/0.20.2"
+license_file = "https://github.com/EmbarkStudios/cargo-deny/blob/87da103c554376c89a641116f835a41073a9d774/LICENSE-MIT"
 action = "depend"
 status = "approved"
 purpose = "CI licence, advisory, source and dependency policy enforcement"
@@ -368,17 +368,17 @@ planned_toche_files = ["deny.toml", ".github/workflows/ci.yml"]
 production_dependency = false
 modified = false
 attribution_required = true
-verification = "cargo deny check passes; pinned via cargo install --version 0.20.2 --locked in CI"
-notes = "Tooling only."
+verification = "cargo deny check passes (clean); pinned via cargo install --git --rev 87da103c (tag 0.20.2) in CI"
+notes = "Tooling only. Commit SHA verified via git ls-remote."
 
 [[sources]]
 id = "cargo-about"
 project = "cargo-about"
 repository = "https://github.com/EmbarkStudios/cargo-about"
-revision = "0.9.1"
-revision_type = "crate"
+revision = "d5b837793cbb01163ce3f754fe51e41a1270ebf9"
+revision_type = "commit"
 license = "MIT OR Apache-2.0"
-license_file = "https://crates.io/crates/cargo-about/0.9.1"
+license_file = "https://github.com/EmbarkStudios/cargo-about/blob/d5b837793cbb01163ce3f754fe51e41a1270ebf9/LICENSE-MIT"
 action = "depend"
 status = "approved"
 purpose = "Generated Rust dependency attribution report"
@@ -388,7 +388,7 @@ production_dependency = false
 modified = false
 attribution_required = true
 verification = "cargo about generate about.hbs -o <file> passes; does not replace THIRD_PARTY_NOTICES.md"
-notes = "Tooling only."
+notes = "Tooling only. Commit SHA verified via git ls-remote."
 
 [[rejected]]
 id = "salad-cc-switch-cli"

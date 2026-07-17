@@ -119,11 +119,11 @@ None.
 
 ## cargo-deny result
 
-PASS with warnings:
+PASS (clean — no warnings or errors):
 
-- Warnings for missing clarification files on `hyper-rustls` and `rustls` (non-blocking; crates ship SPDX metadata).
-- Warnings for unused licence allowances (non-blocking).
-- Duplicate `hashbrown` versions noted (non-blocking; caused by `rusqlite` and `toml_edit` indexmap dependencies).
+- Clarify entries for `hyper-rustls`, `rustls`, `rustls-webpki`, and `webpki-roots` use real license file paths and SHA-256 hashes from local registry crates.
+- Unused licence allowances removed from allowlist (BSD-2-Clause, CDLA-Permissive-2.0, LGPL-2.1-or-later, MIT-0, MPL-2.0, OpenSSL); each is still permitted by policy but not currently needed in deny.toml.
+- `hashbrown` 0.15.5 skipped in `[bans]` (known-safe duplicate caused by `rusqlite` → `hashlink` → `hashbrown 0.15.5` vs `toml_edit` → `indexmap` → `hashbrown 0.17.1`).
 
 ## cargo-about result
 
@@ -136,7 +136,8 @@ cargo about generate about.hbs --fail -o /tmp/THIRD_PARTY_DEPENDENCIES.md
 ## CI changes
 
 - Added `cargo-deny` and `cargo-about` steps to `.github/workflows/ci.yml` quality job.
-- Pinned versions by full semantic version in CI commands.
+- Pinned by exact full commit SHA in CI: `cargo-deny` @ `87da103c554376c89a641116f835a41073a9d774` (tag 0.20.2), `cargo-about` @ `d5b837793cbb01163ce3f754fe51e41a1270ebf9` (tag 0.9.1).
+- Per LICENSE_POLICY.md: "GitHub Actions used in CI must be pinned by full commit SHA." Applies to all `cargo install` tooling, not only `uses:` references.
 
 ## ADRs added
 
