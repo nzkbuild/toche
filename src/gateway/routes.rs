@@ -8,13 +8,13 @@ use reqwest::Client;
 use tracing::{error, info};
 
 use crate::cache;
+use crate::config::loader::{config_dir, load_default_integration};
+use crate::config::toche_config::CacheMode;
 use crate::continuity;
 use crate::efficiency;
 use crate::meter::db::{LedgerDb, NewLedgerRecord};
 use crate::meter::pricing::PricingMap;
 use crate::meter::recorder::{RequestTimer, current_project_path, estimate_tokens, record_request};
-use crate::profiles::loader::{config_dir, load_profiles};
-use crate::profiles::types::CacheMode;
 use crate::reduce;
 use crate::safe_cache;
 use crate::shield;
@@ -128,21 +128,19 @@ pub async fn messages(
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     let timer = RequestTimer::start();
 
-    let profiles = load_profiles().map_err(|e| {
-        error!("Failed to load profiles: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    let profile = profiles.default_profile().ok_or_else(|| {
-        error!("No default profile configured");
+    let resolved = load_default_integration().map_err(|e| {
+        error!("Failed to load default integration: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
     let model = extract_model(&body);
-    let profile_name = profile.name.clone();
+    let profile_name = resolved.name.clone();
     let input_tokens = estimate_tokens(&body);
 
-    let upstream_url = format!("{}/v1/messages", profile.upstream_url.trim_end_matches('/'));
+    let upstream_url = format!(
+        "{}/v1/messages",
+        resolved.upstream_url.trim_end_matches('/')
+    );
 
     let client = Client::builder()
         .build()
@@ -157,11 +155,21 @@ pub async fn messages(
         upstream_headers.insert(name.clone(), value.clone());
     }
 
-    for (header_name, header_value) in &profile.headers {
+    for (header_name, header_value) in &resolved.upstream_headers {
         upstream_headers.insert(
             axum::http::HeaderName::from_bytes(header_name.as_bytes())
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
             axum::http::HeaderValue::from_str(header_value)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        );
+    }
+
+    // Add auth header if configured
+    if let Some(value) = &resolved.auth.value {
+        upstream_headers.insert(
+            axum::http::HeaderName::from_bytes(resolved.auth.header_name.as_bytes())
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            axum::http::HeaderValue::from_str(value)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
         );
     }
@@ -219,7 +227,7 @@ pub async fn messages(
             info!("Forwarding to upstream: {upstream_url}");
 
             // Step 1.5: Persistent safe cache check (after shield, before reduce).
-            let safe_cache_cfg = profile.safe_cache.as_ref();
+            let safe_cache_cfg = resolved.safe_cache.as_ref();
 
             let mut cache_hit: Option<ForwardedResponse> = None;
 
@@ -292,7 +300,7 @@ pub async fn messages(
                 // Step 2: Reduce tool output in the request body (after shield,
                 // before cache injection — deterministic reduction is cache-friendly).
                 let default_reduce = reduce::config::ReduceConfig::default();
-                let reduce_cfg = profile.reduce.as_ref().unwrap_or(&default_reduce);
+                let reduce_cfg = resolved.reduce.as_ref().unwrap_or(&default_reduce);
 
                 let reduction = reduce::transform::reduce_body(&body, reduce_cfg, bypass_reduce)
                     .unwrap_or_else(|e| {
@@ -311,7 +319,7 @@ pub async fn messages(
 
                 // Step 2.5: Efficiency profile injection (after reduce, before cache).
                 let default_efficiency = efficiency::config::EfficiencyConfig::default();
-                let efficiency_cfg = profile.efficiency.as_ref().unwrap_or(&default_efficiency);
+                let efficiency_cfg = resolved.efficiency.as_ref().unwrap_or(&default_efficiency);
 
                 let instruction = if bypass_efficiency {
                     None
@@ -345,7 +353,7 @@ pub async fn messages(
                 }
 
                 // Step 3: Cache breakpoint injection on the efficiency-modified body.
-                let final_body = if let Some(ref cache_cfg) = profile.cache {
+                let final_body = if let Some(ref cache_cfg) = resolved.cache {
                     if cache_cfg.enabled && !bypass_cache {
                         let plan_result = cache::breakpoint::find_breakpoints(
                             &body_after_efficiency,

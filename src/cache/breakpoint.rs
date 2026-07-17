@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::profiles::types::CacheBreakpoint;
+use crate::config::toche_config::CacheBreakpoint;
 
 /// Describes where cache_control breakpoints should be placed in a request body.
 #[derive(Debug, Clone, PartialEq)]

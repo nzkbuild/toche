@@ -1,8 +1,9 @@
 use anyhow::Context;
 use tracing::info;
 
+use crate::config::loader::config_dir;
+use crate::config::migration::migrate_v1_to_v2;
 use crate::config::utils::atomic_write_secure;
-use crate::profiles::loader::config_dir;
 use crate::profiles::types::{AuthMethod, Profile, Profiles};
 
 pub async fn run(force: bool) -> anyhow::Result<()> {
@@ -11,61 +12,71 @@ pub async fn run(force: bool) -> anyhow::Result<()> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir).context("Failed to create config directory")?;
 
-    let profiles_path = dir.join("profiles.toml");
+    let config_path = dir.join("config.toml");
 
     // Guard against silently destroying existing user configuration.
-    if profiles_path.exists() && !force {
-        println!(
-            "profiles.toml already exists at {}",
-            profiles_path.display()
-        );
+    if config_path.exists() && !force {
+        println!("config.toml already exists at {}", config_path.display());
         println!();
-        println!("Running setup again would overwrite your custom profiles, API keys,");
-        println!("and model configuration. If you want to regenerate the default config,");
-        println!("use --force to overwrite (a backup will be created).");
+        println!("Running setup again would overwrite your custom configuration.");
+        println!(
+            "If you want to regenerate the default config, use --force to overwrite (a backup will be created)."
+        );
         return Ok(());
     }
 
-    if profiles_path.exists() && force {
-        let bak_path = dir.join("profiles.toml.bak");
-        std::fs::copy(&profiles_path, &bak_path)
-            .context("Failed to backup existing profiles.toml")?;
-        println!("Existing profiles.toml backed up to {}", bak_path.display());
+    if config_path.exists() && force {
+        let bak_path = dir.join("config.toml.bak");
+        std::fs::copy(&config_path, &bak_path).context("Failed to backup existing config.toml")?;
+        println!("Existing config.toml backed up to {}", bak_path.display());
     }
 
     // Detect existing Claude Code gateway configuration
     let claude_settings = detect_claude_config()?;
 
-    let profiles = if let Some(settings) = claude_settings {
+    let config = if let Some(settings) = claude_settings {
         let profile = import_from_claude_settings(&settings)?;
         println!("Detected Claude Code upstream: {}", profile.upstream_url);
-        Profiles {
+        let profiles = Profiles {
             default: Some(profile.name.clone()),
             profiles: vec![profile],
-        }
+        };
+        migrate_v1_to_v2(&profiles)
     } else {
         println!("No existing Claude Code gateway found.");
         println!(
-            "Create {}/profiles.toml to configure your upstream.",
+            "Create {}/config.toml to configure your upstream.",
             dir.display()
         );
         println!("Example:");
-        println!("  [[profiles]]");
-        println!("  name = \"default\"");
-        println!("  upstream_url = \"https://api.anthropic.com\"");
-        println!("  auth_method.type = \"api_key\"");
-        println!("  auth_method.header_name = \"x-api-key\"");
-        println!("  auth_method.key = \"sk-ant-...\"");
+        println!("  [runtime]");
+        println!("  port = 8743");
+        println!("  listen_address = \"127.0.0.1\"");
+        println!("  request_timeout_ms = 300000");
+        println!();
+        println!("  [[upstreams]]");
+        println!("  id = \"7f8a3b2c\"");
+        println!("  name = \"Anthropic\"");
+        println!("  url = \"https://api.anthropic.com\"");
+        println!("  auth.type = \"environment\"");
+        println!("  auth.key = \"ANTHROPIC_API_KEY\"");
+        println!("  auth.header_name = \"x-api-key\"");
         return Ok(());
     };
 
-    let toml_str = toml::to_string_pretty(&profiles).context("Failed to serialize profiles")?;
-    atomic_write_secure(&profiles_path, &toml_str)?;
+    let toml_str = toml::to_string_pretty(&config).context("Failed to serialize config")?;
+    atomic_write_secure(&config_path, &toml_str)?;
 
+    let default_name = config
+        .defaults
+        .integration
+        .and_then(|id| config.integrations.iter().find(|i| i.id == id))
+        .map(|i| i.name.clone())
+        .unwrap_or_else(|| "default".into());
     println!(
-        "Profile '{}' saved to {}",
-        profiles.default.as_deref().unwrap_or("default"),
-        profiles_path.display()
+        "Integration '{}' saved to {}",
+        default_name,
+        config_path.display()
     );
     println!("Run `toche connect` to point Claude Code to Toche.");
 
@@ -89,8 +100,8 @@ fn detect_graphify() {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| uv_path.display().to_string())
         );
-        println!("Add [graphify] section to profiles.toml to configure:");
-        println!("  [graphify]");
+        println!("Add [graphify] section to the integration in config.toml to configure:");
+        println!("  [integrations.graphify]");
         println!("  enabled = true");
         println!("  # graph_path = \"path/to/graph.json\"  # if non-default");
         println!("  # auto_extract = false");
@@ -99,7 +110,7 @@ fn detect_graphify() {
         println!("To enable knowledge graph queries, install Graphify:");
         println!("  uv tool install graphifyy");
         println!("  # or: pipx install graphifyy");
-        println!("Then add a [graphify] section to your profile in profiles.toml.");
+        println!("Then add a [graphify] section to the integration in config.toml.");
     }
 }
 

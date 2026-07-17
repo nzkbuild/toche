@@ -1,11 +1,11 @@
+use crate::config::loader::load_default_integration;
 use crate::graphify::adapter::GraphifyAdapter;
-use crate::profiles::loader::load_profiles;
 
 fn get_adapter() -> Option<GraphifyAdapter> {
-    let profiles = load_profiles().ok()?;
-    let graph_path = profiles
-        .default_profile()
-        .and_then(|p| p.graphify.as_ref())
+    let resolved = load_default_integration().ok()?;
+    let graph_path = resolved
+        .graphify
+        .as_ref()
         .and_then(|g| g.graph_path.clone())
         .map(std::path::PathBuf::from);
     Some(GraphifyAdapter::new(graph_path))

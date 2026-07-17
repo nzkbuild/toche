@@ -1,5 +1,5 @@
 use crate::cli::connect::points_to_toche;
-use crate::profiles::loader::config_dir;
+use crate::config::loader::config_dir;
 
 pub async fn run() -> anyhow::Result<()> {
     println!("Toche Doctor");
@@ -11,19 +11,31 @@ pub async fn run() -> anyhow::Result<()> {
     println!("Config directory: {}", dir.display());
     println!("  exists: {}", dir.exists());
 
-    // Profiles
-    let profiles_path = dir.join("profiles.toml");
-    println!("Profiles file: {}", profiles_path.display());
-    println!("  exists: {}", profiles_path.exists());
+    // Config files
+    let config_path = dir.join("config.toml");
+    let legacy_path = dir.join("profiles.toml");
+    println!("Config file: {}", config_path.display());
+    println!("  exists: {}", config_path.exists());
+    println!("Legacy profiles file: {}", legacy_path.display());
+    println!("  exists: {}", legacy_path.exists());
 
-    match crate::profiles::loader::load_profiles() {
-        Ok(profiles) => {
-            println!(
-                "  default profile: {}",
-                profiles.default.as_deref().unwrap_or("none")
-            );
-            for p in &profiles.profiles {
-                println!("    {} -> {}", p.name, p.upstream_url);
+    match crate::config::loader::load_config() {
+        Ok(config) => {
+            let default_name = config
+                .defaults
+                .integration
+                .and_then(|id| config.integrations.iter().find(|i| i.id == id))
+                .map(|i| i.name.clone())
+                .unwrap_or_else(|| "none".into());
+            println!("  default integration: {default_name}");
+            for i in &config.integrations {
+                let upstream = config
+                    .upstreams
+                    .iter()
+                    .find(|u| u.id == i.upstream)
+                    .map(|u| u.url.as_str())
+                    .unwrap_or("unknown");
+                println!("    {} -> {}", i.name, upstream);
             }
         }
         Err(e) => {

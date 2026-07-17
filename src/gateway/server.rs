@@ -29,22 +29,21 @@ async fn health() -> &'static str {
 /// Checks: profiles load, a default profile exists, and the upstream
 /// URL is non-empty. Used by `toche connect` as a precondition gate.
 async fn ready() -> axum::response::Json<serde_json::Value> {
-    use crate::profiles::loader::load_profiles;
+    use crate::config::loader::load_default_integration;
 
     let mut checks: Vec<String> = Vec::new();
 
-    let profiles_ok = match load_profiles() {
-        Ok(profiles) => {
-            let has_default = profiles.default_profile().is_some();
-            if has_default {
-                true
-            } else {
-                checks.push("no default profile configured".to_string());
+    let profiles_ok = match load_default_integration() {
+        Ok(integration) => {
+            if integration.upstream_url.is_empty() {
+                checks.push("no default integration upstream configured".to_string());
                 false
+            } else {
+                true
             }
         }
         Err(e) => {
-            checks.push(format!("failed to load profiles: {e}"));
+            checks.push(format!("failed to load default integration: {e}"));
             false
         }
     };

@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod config;
 pub mod continuity;
 pub mod efficiency;
 pub mod graphify;
