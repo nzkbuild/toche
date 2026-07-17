@@ -2,6 +2,15 @@
 
 All notable changes to Toche will be documented in this file.
 
+## [1.0.9] - 2026-07-17
+
+### Fixed
+- Renamed the npm package to `@nzkbuild/toche` after npm rejected the unscoped name as too similar to existing packages
+- Updated installation, removal, verification, and recovery instructions for the public npm scope
+
+### Changed
+- Bumped Rust, npm, release workflow, test fixture, and public status metadata to 1.0.9
+
 ## [1.0.8] - 2026-07-17
 
 ### Fixed
