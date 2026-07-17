@@ -2,6 +2,15 @@
 
 All notable changes to Toche will be documented in this file.
 
+## [1.0.10] - 2026-07-17
+
+### Fixed
+- Windows npm installation now passes ZIP archive and destination paths to PowerShell through environment variables, preventing empty `Expand-Archive` arguments
+
+### Added
+- A Windows-only regression test that creates and extracts a ZIP archive through paths containing spaces
+- Windows npm installer validation in both CI and the draft-release workflow
+
 ## [1.0.9] - 2026-07-17
 
 ### Fixed

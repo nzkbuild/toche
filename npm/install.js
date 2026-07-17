@@ -82,11 +82,20 @@ function extract(archive, destination, format) {
   const powershell = process.env.SystemRoot
     ? path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
     : "powershell.exe";
-  const command = "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force";
+  const command =
+    "Expand-Archive -LiteralPath $env:TOCHE_ARCHIVE_PATH " +
+    "-DestinationPath $env:TOCHE_EXTRACT_DESTINATION -Force";
   const result = spawnSync(
     powershell,
-    ["-NoProfile", "-NonInteractive", "-Command", command, archive, destination],
-    { stdio: "inherit" }
+    ["-NoProfile", "-NonInteractive", "-Command", command],
+    {
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        TOCHE_ARCHIVE_PATH: archive,
+        TOCHE_EXTRACT_DESTINATION: destination
+      }
+    }
   );
   if (result.status !== 0) throw new Error("Could not extract the Toche zip archive.");
 }
@@ -144,4 +153,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { install, parseChecksum, releaseAsset };
+module.exports = { extract, install, parseChecksum, releaseAsset };
