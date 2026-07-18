@@ -7,6 +7,7 @@ mod continuity;
 mod efficiency;
 mod gateway;
 mod graphify;
+mod identity;
 mod integrations;
 mod meter;
 mod profiles;

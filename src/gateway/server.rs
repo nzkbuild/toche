@@ -1,14 +1,40 @@
 use anyhow::Context;
 use axum::Router;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tracing::info;
 
+use crate::config::loader::{config_dir, load_config};
+use crate::identity::{self, RuntimeId};
+
+/// Application state shared across all request handlers.
+#[derive(Clone)]
+pub struct AppState {
+    pub runtime_id: RuntimeId,
+    pub config_snapshot_hash: String,
+}
+
 pub async fn serve() -> anyhow::Result<()> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8743));
+    let dir = config_dir();
+    let runtime_id = RuntimeId::load_or_create(&dir);
+    info!("Toche runtime id: {}", runtime_id);
+
+    let config = load_config().context("Failed to load configuration")?;
+    let config_toml = toml::to_string_pretty(&config).unwrap_or_default();
+    let config_snapshot_hash = identity::compute_config_snapshot(&config_toml);
+
+    let state = Arc::new(AppState {
+        runtime_id,
+        config_snapshot_hash,
+    });
+
+    let port = config.runtime.port;
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let app = Router::new()
         .route("/v1/messages", axum::routing::post(super::routes::messages))
         .route("/health", axum::routing::get(health))
-        .route("/ready", axum::routing::get(ready));
+        .route("/ready", axum::routing::get(ready))
+        .with_state(state);
 
     info!("Toche gateway listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr)

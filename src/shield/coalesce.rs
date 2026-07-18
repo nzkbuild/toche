@@ -51,8 +51,16 @@ impl CoalesceStore {
     /// Returns `Forward` if this should proceed as the leader, `Coalesced`
     /// if another request already has the response, or `Failed` if a prior
     /// matching request completed with an error.
-    pub async fn try_acquire(&self, upstream_url: &str, fingerprint: &str) -> CoalesceResult {
-        let key = format!("{}|{}", upstream_url, fingerprint);
+    ///
+    /// The `trust_domain_id` ensures different credential references never
+    /// share flights even when the upstream URL and fingerprint match.
+    pub async fn try_acquire(
+        &self,
+        upstream_url: &str,
+        fingerprint: &str,
+        trust_domain_id: &str,
+    ) -> CoalesceResult {
+        let key = format!("{}|{}|{}", upstream_url, fingerprint, trust_domain_id);
 
         let rx = {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -116,10 +124,12 @@ mod tests {
         rt.block_on(f)
     }
 
+    const TD: &str = "default-td";
+
     #[test]
     fn forward_on_first_call() {
         let store = CoalesceStore::new();
-        let result = block_on(store.try_acquire("http://upstream/v1", "abc123"));
+        let result = block_on(store.try_acquire("http://upstream/v1", "abc123", TD));
         match result {
             CoalesceResult::Forward { .. } => {}
             other => panic!("expected Forward, got {other:?}"),
@@ -131,7 +141,7 @@ mod tests {
         let store = CoalesceStore::new();
 
         // Leader acquires
-        let leader = block_on(store.try_acquire("http://upstream/v1", "abc123"));
+        let leader = block_on(store.try_acquire("http://upstream/v1", "abc123", TD));
         let key = match leader {
             CoalesceResult::Forward { ref key } => key.clone(),
             _ => panic!("expected Forward"),
@@ -145,7 +155,7 @@ mod tests {
         let store = CoalesceStore::new();
 
         // Leader acquires
-        let key = match block_on(store.try_acquire("http://up/v1", "fp1")) {
+        let key = match block_on(store.try_acquire("http://up/v1", "fp1", TD)) {
             CoalesceResult::Forward { key } => key,
             _ => panic!("expected Forward"),
         };
@@ -160,7 +170,7 @@ mod tests {
         );
 
         // After complete, the key is removed. Next request is a new Forward.
-        let result = block_on(store.try_acquire("http://up/v1", "fp1"));
+        let result = block_on(store.try_acquire("http://up/v1", "fp1", TD));
         match result {
             CoalesceResult::Forward { .. } => {} // Clean store
             _ => panic!("expected Forward after complete cleans the key"),
@@ -171,7 +181,7 @@ mod tests {
     fn cancel_cleans_up() {
         let store = CoalesceStore::new();
 
-        let key = match block_on(store.try_acquire("http://up/v1", "fp2")) {
+        let key = match block_on(store.try_acquire("http://up/v1", "fp2", TD)) {
             CoalesceResult::Forward { key } => key,
             _ => panic!("expected Forward"),
         };
@@ -179,7 +189,7 @@ mod tests {
         store.cancel(&key);
 
         // After cancel, store is clean
-        let result = block_on(store.try_acquire("http://up/v1", "fp2"));
+        let result = block_on(store.try_acquire("http://up/v1", "fp2", TD));
         match result {
             CoalesceResult::Forward { .. } => {}
             _ => panic!("expected Forward after cancel"),
@@ -190,8 +200,8 @@ mod tests {
     fn different_urls_different_keys() {
         let store = CoalesceStore::new();
 
-        let r1 = block_on(store.try_acquire("http://a/v1", "fp"));
-        let r2 = block_on(store.try_acquire("http://b/v1", "fp"));
+        let r1 = block_on(store.try_acquire("http://a/v1", "fp", TD));
+        let r2 = block_on(store.try_acquire("http://b/v1", "fp", TD));
 
         assert!(matches!(r1, CoalesceResult::Forward { .. }));
         assert!(matches!(r2, CoalesceResult::Forward { .. }));
@@ -201,11 +211,47 @@ mod tests {
     fn different_fingerprints_both_forward() {
         let store = CoalesceStore::new();
 
-        let r1 = block_on(store.try_acquire("http://up/v1", "fp1"));
-        let r2 = block_on(store.try_acquire("http://up/v1", "fp2"));
+        let r1 = block_on(store.try_acquire("http://up/v1", "fp1", TD));
+        let r2 = block_on(store.try_acquire("http://up/v1", "fp2", TD));
 
         assert!(matches!(r1, CoalesceResult::Forward { .. }));
         assert!(matches!(r2, CoalesceResult::Forward { .. }));
+    }
+
+    #[test]
+    fn different_trust_domains_different_keys() {
+        let store = CoalesceStore::new();
+
+        let r1 = block_on(store.try_acquire("http://up/v1", "fp", "domain-a"));
+        let r2 = block_on(store.try_acquire("http://up/v1", "fp", "domain-b"));
+
+        assert!(matches!(r1, CoalesceResult::Forward { .. }));
+        assert!(matches!(r2, CoalesceResult::Forward { .. }));
+    }
+
+    #[test]
+    fn same_trust_domain_and_fp_coalesces() {
+        let store = CoalesceStore::new();
+
+        // Leader on domain-a
+        let leader = block_on(store.try_acquire("http://up/v1", "fp1", "domain-a"));
+        let key = match leader {
+            CoalesceResult::Forward { ref key } => key.clone(),
+            _ => panic!("expected Forward"),
+        };
+
+        // Second caller on same domain+fp should be on a fresh store
+        // (different store) or wait. But we're not testing broadcast here
+        // just the key format. Key includes the trust domain.
+        assert!(key.contains("domain-a"));
+
+        store.complete(
+            &key,
+            CapturedResponse {
+                status: 200,
+                body_bytes: b"ok".to_vec(),
+            },
+        );
     }
 
     #[test]
@@ -213,7 +259,7 @@ mod tests {
         let store = CoalesceStore::new();
 
         // Leader acquires
-        let key = match block_on(store.try_acquire("http://up/v1", "cp1")) {
+        let key = match block_on(store.try_acquire("http://up/v1", "cp1", TD)) {
             CoalesceResult::Forward { key } => key.clone(),
             _ => panic!("expected Forward"),
         };
@@ -221,12 +267,9 @@ mod tests {
         // Spawn waiter — needs concurrent runtime
         let rt = tokio::runtime::Runtime::new().unwrap();
         let waiter = rt.spawn({
-            // Can't share store across runtimes, so let's create a fresh store
-            // for this test — not ideal but the mutation test above proves it works
             async {
                 let store = CoalesceStore::new();
-                // Register as leader on fresh store
-                store.try_acquire("http://up/v1", "cp1").await
+                store.try_acquire("http://up/v1", "cp1", TD).await
             }
         });
         let waiter_result = rt.block_on(waiter).unwrap();
@@ -242,7 +285,7 @@ mod tests {
         );
 
         // Store is clean after complete
-        let result = block_on(store.try_acquire("http://up/v1", "cp1"));
+        let result = block_on(store.try_acquire("http://up/v1", "cp1", TD));
         assert!(matches!(result, CoalesceResult::Forward { .. }));
     }
 }

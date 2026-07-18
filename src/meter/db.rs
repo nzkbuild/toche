@@ -27,6 +27,13 @@ pub struct NewLedgerRecord {
     pub reduction_count: u64,
     pub efficiency_mode: String,
     pub local_cache_hit: bool,
+    pub runtime_id: String,
+    pub request_id: String,
+    pub integration_id: String,
+    pub upstream_id: String,
+    pub trust_domain_id: String,
+    pub config_snapshot_hash: String,
+    pub attribution: String,
 }
 
 pub struct LedgerDb {
@@ -66,7 +73,7 @@ impl LedgerDb {
             )
             .unwrap_or(0);
 
-        const EXPECTED_VERSION: i32 = 9;
+        const EXPECTED_VERSION: i32 = 10;
 
         if current_version > EXPECTED_VERSION {
             anyhow::bail!(
@@ -144,6 +151,40 @@ impl LedgerDb {
             conn.execute("INSERT INTO schema_version (version) VALUES (7)", [])?;
         }
 
+        // Version 10: identity columns (runtime_id, request_id, integration_id,
+        // upstream_id, trust_domain_id, config_snapshot_hash, attribution)
+        if current_version < 10 {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN runtime_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN request_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN integration_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN upstream_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN trust_domain_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN config_snapshot_hash TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN attribution TEXT NOT NULL DEFAULT 'unknown'",
+                [],
+            )?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (10)", [])?;
+        }
+
         // Indexes (safe to recreate)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ledger_timestamp ON ledger(timestamp)",
@@ -173,8 +214,9 @@ impl LedgerDb {
         self.conn.execute(
             "INSERT INTO ledger (timestamp, model, profile_name, input_tokens, output_tokens,
              cache_read_input_tokens, cache_creation_input_tokens, coalesced_count, latency_ms, status, cost, project_path,
-             reduction_input_tokens, reduction_output_tokens, reduction_count, efficiency_mode, local_cache_hit)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             reduction_input_tokens, reduction_output_tokens, reduction_count, efficiency_mode, local_cache_hit,
+             runtime_id, request_id, integration_id, upstream_id, trust_domain_id, config_snapshot_hash, attribution)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             rusqlite::params![
                 entry.timestamp.to_rfc3339(),
                 entry.model,
@@ -193,6 +235,13 @@ impl LedgerDb {
                 entry.reduction_count as i64,
                 entry.efficiency_mode,
                 entry.local_cache_hit as i64,
+                entry.runtime_id,
+                entry.request_id,
+                entry.integration_id,
+                entry.upstream_id,
+                entry.trust_domain_id,
+                entry.config_snapshot_hash,
+                entry.attribution,
             ],
         )?;
         self.cleanup_old()?;
@@ -401,7 +450,8 @@ impl LedgerDb {
         let mut stmt = self.conn.prepare(
             "SELECT id, timestamp, model, profile_name, input_tokens, output_tokens,
                     cache_read_input_tokens, cache_creation_input_tokens, coalesced_count, latency_ms, status, cost, project_path,
-                    reduction_input_tokens, reduction_output_tokens, reduction_count, efficiency_mode, local_cache_hit
+                    reduction_input_tokens, reduction_output_tokens, reduction_count, efficiency_mode, local_cache_hit,
+                    runtime_id, request_id, integration_id, upstream_id, trust_domain_id, config_snapshot_hash, attribution
              FROM ledger
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
              ORDER BY timestamp DESC LIMIT ?3",
@@ -430,6 +480,13 @@ impl LedgerDb {
                 reduction_count: row.get::<_, i64>(15)? as u64,
                 efficiency_mode: row.get(16)?,
                 local_cache_hit: row.get::<_, i64>(17)? != 0,
+                runtime_id: row.get(18)?,
+                request_id: row.get(19)?,
+                integration_id: row.get(20)?,
+                upstream_id: row.get(21)?,
+                trust_domain_id: row.get(22)?,
+                config_snapshot_hash: row.get(23)?,
+                attribution: row.get(24)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -466,6 +523,13 @@ mod tests {
             reduction_count: 0,
             efficiency_mode: String::new(),
             local_cache_hit: false,
+            runtime_id: "test-runtime".into(),
+            request_id: "test-request-001".into(),
+            integration_id: "abc123".into(),
+            upstream_id: "xyz789".into(),
+            trust_domain_id: "deadbeef1234abcd".into(),
+            config_snapshot_hash: "abcdef01".into(),
+            attribution: "unknown".into(),
         };
         let id = db.record(&record).unwrap();
         assert!(id > 0);
@@ -498,6 +562,13 @@ mod tests {
             reduction_count: 0,
             efficiency_mode: String::new(),
             local_cache_hit: false,
+            runtime_id: "test-runtime".into(),
+            request_id: "test-req-1".into(),
+            integration_id: "abc123".into(),
+            upstream_id: "xyz789".into(),
+            trust_domain_id: "deadbeef1234abcd".into(),
+            config_snapshot_hash: "abcdef01".into(),
+            attribution: "unknown".into(),
         })
         .unwrap();
         db.record(&NewLedgerRecord {
@@ -518,6 +589,13 @@ mod tests {
             reduction_count: 0,
             efficiency_mode: String::new(),
             local_cache_hit: false,
+            runtime_id: "test-runtime".into(),
+            request_id: "test-req-2".into(),
+            integration_id: "abc123".into(),
+            upstream_id: "xyz789".into(),
+            trust_domain_id: "deadbeef1234abcd".into(),
+            config_snapshot_hash: "abcdef01".into(),
+            attribution: "unknown".into(),
         })
         .unwrap();
 
@@ -551,6 +629,13 @@ mod tests {
             reduction_count: 0,
             efficiency_mode: String::new(),
             local_cache_hit: false,
+            runtime_id: "test-runtime".into(),
+            request_id: "test-req-3".into(),
+            integration_id: "abc123".into(),
+            upstream_id: "xyz789".into(),
+            trust_domain_id: "deadbeef1234abcd".into(),
+            config_snapshot_hash: "abcdef01".into(),
+            attribution: "unknown".into(),
         })
         .unwrap();
 

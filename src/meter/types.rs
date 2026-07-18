@@ -21,6 +21,13 @@ pub struct LedgerEntry {
     pub reduction_count: u64,
     pub efficiency_mode: String,
     pub local_cache_hit: bool,
+    pub runtime_id: String,
+    pub request_id: String,
+    pub integration_id: String,
+    pub upstream_id: String,
+    pub trust_domain_id: String,
+    pub config_snapshot_hash: String,
+    pub attribution: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

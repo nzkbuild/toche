@@ -113,6 +113,13 @@ mod tests {
             reduction_count: 0,
             efficiency_mode: String::new(),
             local_cache_hit: false,
+            runtime_id: "test-runtime".into(),
+            request_id: "test-req-1".into(),
+            integration_id: "abc123".into(),
+            upstream_id: "xyz789".into(),
+            trust_domain_id: "deadbeef1234abcd".into(),
+            config_snapshot_hash: "abcdef01".into(),
+            attribution: "unknown".into(),
         };
 
         let _id = record_request(&db, &pricing, record).unwrap();
@@ -146,6 +153,13 @@ mod tests {
             reduction_count: 0,
             efficiency_mode: String::new(),
             local_cache_hit: false,
+            runtime_id: "test-runtime".into(),
+            request_id: "test-req-2".into(),
+            integration_id: "abc123".into(),
+            upstream_id: "xyz789".into(),
+            trust_domain_id: "deadbeef1234abcd".into(),
+            config_snapshot_hash: "abcdef01".into(),
+            attribution: "unknown".into(),
         };
 
         let _id = record_request(&db, &pricing, record).unwrap();

@@ -1,6 +1,7 @@
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use futures::stream::Stream;
@@ -12,6 +13,8 @@ use crate::config::loader::{config_dir, load_default_integration};
 use crate::config::toche_config::CacheMode;
 use crate::continuity;
 use crate::efficiency;
+use crate::gateway::server::AppState;
+use crate::identity::{self, IdentityContext, RequestId};
 use crate::meter::db::{LedgerDb, NewLedgerRecord};
 use crate::meter::pricing::PricingMap;
 use crate::meter::recorder::{RequestTimer, current_project_path, estimate_tokens, record_request};
@@ -21,9 +24,6 @@ use crate::shield;
 
 /// Parse the "model" field from an Anthropic Messages API JSON body.
 fn extract_model(body: &str) -> String {
-    // Fast path: for the common case of a top-level "model" key, use
-    // serde_json Value for structural correctness (handles escapes, nested
-    // objects, and the key appearing inside string values correctly).
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|v| v.get("model")?.as_str().map(String::from))
@@ -87,7 +87,6 @@ async fn forward_to_upstream(
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    // Collect full response body
     let collected = Arc::new(Mutex::new(Vec::new()));
     let collected_for_stream = collected.clone();
 
@@ -123,10 +122,12 @@ async fn forward_to_upstream(
 }
 
 pub async fn messages(
+    State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: String,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     let timer = RequestTimer::start();
+    let request_id = RequestId::new();
 
     let resolved = load_default_integration().map_err(|e| {
         error!("Failed to load default integration: {e}");
@@ -134,12 +135,53 @@ pub async fn messages(
     })?;
 
     let model = extract_model(&body);
-    let profile_name = resolved.name.clone();
+    let integration_name = resolved.name.clone();
     let input_tokens = estimate_tokens(&body);
 
     let upstream_url = format!(
         "{}/v1/messages",
         resolved.upstream_url.trim_end_matches('/')
+    );
+
+    // Build identity context
+    let workspace_path = current_project_path();
+    let workspace_id = if workspace_path.is_empty() {
+        None
+    } else {
+        Some(identity::workspace_id_from_path(&workspace_path))
+    };
+
+    let secret_ref_display = resolved.auth.secret_ref.to_string();
+    let trust_domain_id = identity::derive_trust_domain_id(
+        &resolved.id,
+        &resolved.name,
+        &resolved.id, // upstream.id is not directly on resolved, use integration id as proxy
+        &secret_ref_display,
+    );
+
+    let external_request_id = identity::extract_external_request_id(&headers);
+    let conversation_id = identity::extract_conversation_id(&headers);
+
+    let id_ctx = IdentityContext {
+        runtime_id: state.runtime_id.clone(),
+        request_id: request_id.clone(),
+        external_request_id,
+        integration_id: resolved.id.clone(),
+        integration_name: resolved.name.clone(),
+        upstream_id: resolved.id.clone(),
+        upstream_name: resolved.name.clone(),
+        trust_domain_id: trust_domain_id.clone(),
+        instance_id: None,
+        conversation_id,
+        workspace_id,
+        policy_ids: vec![],
+        config_snapshot_hash: state.config_snapshot_hash.clone(),
+        attribution: identity::Attribution::Unknown,
+    };
+
+    info!(
+        "Request {}: integration={}, model={}",
+        request_id, integration_name, model
     );
 
     let client = Client::builder()
@@ -174,9 +216,6 @@ pub async fn messages(
         );
     }
 
-    // Step 1: Request Shield — coalesce identical in-flight requests on the
-    // raw body (before any reduction/cache modifications) for maximum
-    // coalescing.
     let bypass_all = is_bypassed(&headers, "x-toche-bypass");
     let bypass_shield = bypass_all || is_bypassed(&headers, "x-toche-bypass-shield");
     let bypass_safe_cache = bypass_all || is_bypassed(&headers, "x-toche-bypass-safe-cache");
@@ -190,17 +229,18 @@ pub async fn messages(
         shield::coalesce::CoalesceResult::Forward { key: String::new() }
     } else {
         shield::coalesce::store()
-            .try_acquire(&upstream_url, &fingerprint)
+            .try_acquire(&upstream_url, &fingerprint, id_ctx.trust_domain_id.as_str())
             .await
     };
 
     let (forwarded, shield_key_for_complete) = match shield_result {
         shield::coalesce::CoalesceResult::Coalesced { captured } => {
             info!(
-                "Shield coalesced: fingerprint={}.., profile={}, model={}",
+                "Shield coalesced: fingerprint={}.., integration={}, model={}, domain={}",
                 &fingerprint[..16.min(fingerprint.len())],
-                profile_name,
-                model
+                integration_name,
+                model,
+                id_ctx.trust_domain_id.as_str()
             );
             (
                 ForwardedResponse {
@@ -287,7 +327,6 @@ pub async fn messages(
             }
 
             if let Some(cached) = cache_hit {
-                // Complete shield slot so waiters get the cached response
                 shield::coalesce::store().complete(
                     &key,
                     shield::coalesce::CapturedResponse {
@@ -297,8 +336,6 @@ pub async fn messages(
                 );
                 (cached, None)
             } else {
-                // Step 2: Reduce tool output in the request body (after shield,
-                // before cache injection — deterministic reduction is cache-friendly).
                 let default_reduce = reduce::config::ReduceConfig::default();
                 let reduce_cfg = resolved.reduce.as_ref().unwrap_or(&default_reduce);
 
@@ -317,7 +354,6 @@ pub async fn messages(
 
                 let reduced_body = reduction.modified_body;
 
-                // Step 2.5: Efficiency profile injection (after reduce, before cache).
                 let default_efficiency = efficiency::config::EfficiencyConfig::default();
                 let efficiency_cfg = resolved.efficiency.as_ref().unwrap_or(&default_efficiency);
 
@@ -347,12 +383,11 @@ pub async fn messages(
 
                 if !efficiency_mode_name.is_empty() {
                     info!(
-                        "Efficiency: {} mode active, {} tokens injected, profile={}, model={}",
-                        efficiency_mode_name, efficiency_tokens_added, profile_name, model
+                        "Efficiency: {} mode active, {} tokens injected, integration={}, model={}",
+                        efficiency_mode_name, efficiency_tokens_added, integration_name, model
                     );
                 }
 
-                // Step 3: Cache breakpoint injection on the efficiency-modified body.
                 let final_body = if let Some(ref cache_cfg) = resolved.cache {
                     if cache_cfg.enabled && !bypass_cache {
                         let plan_result = cache::breakpoint::find_breakpoints(
@@ -370,7 +405,7 @@ pub async fn messages(
                             CacheMode::Observe => {
                                 if bp.has_breakpoints() {
                                     info!(
-                                        "Cache observe: {} breakpoints found (system={}, messages={}), profile={}, model={}",
+                                        "Cache observe: {} breakpoints found (system={}, messages={}), integration={}, model={}",
                                         bp.message_blocks.len()
                                             + if bp.system_block_index.is_some() {
                                                 1
@@ -379,7 +414,7 @@ pub async fn messages(
                                             },
                                         bp.system_block_index.is_some(),
                                         bp.message_blocks.len(),
-                                        profile_name,
+                                        integration_name,
                                         model
                                     );
                                 }
@@ -393,8 +428,8 @@ pub async fn messages(
                                         0
                                     };
                                 info!(
-                                    "Cache auto: {} breakpoints injected, profile={}, model={}",
-                                    count, profile_name, model
+                                    "Cache auto: {} breakpoints injected, integration={}, model={}",
+                                    count, integration_name, model
                                 );
                                 cache::inject::inject_cache_control(&body_after_efficiency, &bp)
                                     .unwrap_or_else(|e| {
@@ -487,7 +522,7 @@ pub async fn messages(
 
     // Record to ledger (fire-and-forget)
     let model_clone = model;
-    let profile_clone = profile_name;
+    let integration_name_clone = integration_name;
     let status_clone = status_str.to_string();
     let project_path = current_project_path();
     let cache_read = forwarded.cache_read_tokens;
@@ -498,6 +533,7 @@ pub async fn messages(
     let reduction_count = forwarded.reduction_count;
     let efficiency_mode = forwarded.efficiency_mode;
     let _efficiency_tokens_added = forwarded.efficiency_tokens_added;
+    let id_ctx_for_ledger = id_ctx.clone();
     tokio::spawn(async move {
         let db_path = config_dir().join("ledger.db");
         let db = match LedgerDb::open(&db_path) {
@@ -524,7 +560,7 @@ pub async fn messages(
         let record = NewLedgerRecord {
             timestamp: chrono::Utc::now(),
             model: model_clone,
-            profile_name: profile_clone,
+            profile_name: integration_name_clone,
             input_tokens,
             output_tokens,
             cache_read_input_tokens: cache_read,
@@ -539,6 +575,13 @@ pub async fn messages(
             reduction_count,
             efficiency_mode,
             local_cache_hit: forwarded.local_cache_hit,
+            runtime_id: id_ctx_for_ledger.runtime_id.as_str().to_string(),
+            request_id: id_ctx_for_ledger.request_id.as_str().to_string(),
+            integration_id: id_ctx_for_ledger.integration_id,
+            upstream_id: id_ctx_for_ledger.upstream_id,
+            trust_domain_id: id_ctx_for_ledger.trust_domain_id.as_str().to_string(),
+            config_snapshot_hash: id_ctx_for_ledger.config_snapshot_hash,
+            attribution: id_ctx_for_ledger.attribution.to_string(),
         };
         if let Err(e) = record_request(&db, &pricing, record) {
             error!("Failed to record to ledger: {e}");
@@ -583,8 +626,6 @@ mod tests {
 
     #[test]
     fn test_extract_model_key_in_string_value_not_matched() {
-        // The word "model" appearing inside a message string must not be
-        // mistaken for the top-level "model" key.
         let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":"which model to use"}]}"#;
         assert_eq!(extract_model(body), "claude-sonnet-5");
     }
