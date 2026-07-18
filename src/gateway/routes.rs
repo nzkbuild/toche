@@ -18,27 +18,10 @@ use crate::identity::{self, IdentityContext, RequestId};
 use crate::meter::db::{LedgerDb, NewLedgerRecord};
 use crate::meter::pricing::PricingMap;
 use crate::meter::recorder::{RequestTimer, current_project_path, estimate_tokens, record_request};
+use crate::protocol::{Protocol, anthropic::AnthropicProtocol};
 use crate::reduce;
 use crate::safe_cache;
 use crate::shield;
-
-/// Parse the "model" field from an Anthropic Messages API JSON body.
-fn extract_model(body: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| v.get("model")?.as_str().map(String::from))
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// Check whether the request body has `stream: true`.
-/// Streaming requests bypass the flight registry entirely because
-/// buffered-after-completion replay is not transparent streaming coalescing.
-fn is_streaming_request(body: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| v.get("stream")?.as_bool())
-        .unwrap_or(false)
-}
 
 /// Check whether a bypass header is set to "true" (case-insensitive).
 fn is_bypassed(headers: &HeaderMap, name: &str) -> bool {
@@ -71,6 +54,7 @@ async fn forward_to_upstream(
     upstream_url: &str,
     upstream_headers: HeaderMap,
     body: String,
+    protocol: &dyn Protocol,
 ) -> Result<ForwardedResponse, StatusCode> {
     let response = client
         .post(upstream_url)
@@ -84,18 +68,7 @@ async fn forward_to_upstream(
         })?;
 
     let status = response.status().as_u16();
-    let cache_read: u64 = response
-        .headers()
-        .get("anthropic-cache-read-input-tokens")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let cache_create: u64 = response
-        .headers()
-        .get("anthropic-cache-creation-input-tokens")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let resp_headers = protocol.parse_response_headers(response.headers());
 
     let collected = Arc::new(Mutex::new(Vec::new()));
     let collected_for_stream = collected.clone();
@@ -119,8 +92,8 @@ async fn forward_to_upstream(
     Ok(ForwardedResponse {
         status,
         body_bytes,
-        cache_read_tokens: cache_read,
-        cache_create_tokens: cache_create,
+        cache_read_tokens: resp_headers.cache_read_tokens,
+        cache_create_tokens: resp_headers.cache_create_tokens,
         coalesced_count: 0,
         reduction_input_tokens: 0,
         reduction_output_tokens: 0,
@@ -144,13 +117,16 @@ pub async fn messages(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let model = extract_model(&body);
+    let protocol = AnthropicProtocol;
+
+    let model = protocol.extract_model(&body);
     let integration_name = resolved.name.clone();
     let input_tokens = estimate_tokens(&body);
 
     let upstream_url = format!(
-        "{}/v1/messages",
-        resolved.upstream_url.trim_end_matches('/')
+        "{}{}",
+        resolved.upstream_url.trim_end_matches('/'),
+        protocol.path()
     );
 
     // Build identity context
@@ -258,9 +234,9 @@ pub async fn messages(
     let bypass_efficiency = bypass_all || is_bypassed(&headers, "x-toche-bypass-efficiency");
     let bypass_cache = bypass_all || is_bypassed(&headers, "x-toche-bypass-cache");
 
-    let is_streaming = is_streaming_request(&body);
+    let is_streaming = protocol.is_streaming(&body);
 
-    let fingerprint = shield::fingerprint::compute(&body);
+    let fingerprint = protocol.fingerprint(&body);
 
     // Streaming requests must bypass the flight registry.
     // Buffered-after-completion replay is not transparent streaming coalescing.
@@ -476,7 +452,8 @@ pub async fn messages(
                                     "Cache auto: {} breakpoints injected, integration={}, model={}",
                                     count, integration_name, model
                                 );
-                                cache::inject::inject_cache_control(&body_after_efficiency, &bp)
+                                protocol
+                                    .inject_cache_control(&body_after_efficiency, &bp)
                                     .unwrap_or_else(|e| {
                                         error!("Cache injection failed: {e}, forwarding body");
                                         body_after_efficiency
@@ -490,9 +467,14 @@ pub async fn messages(
                     body_after_efficiency
                 };
 
-                let mut fwd =
-                    forward_to_upstream(&client, &upstream_url, upstream_headers, final_body)
-                        .await?;
+                let mut fwd = forward_to_upstream(
+                    &client,
+                    &upstream_url,
+                    upstream_headers,
+                    final_body,
+                    &protocol,
+                )
+                .await?;
                 fwd.reduction_input_tokens = reduction.tokens_raw;
                 fwd.reduction_output_tokens = reduction.tokens_reduced;
                 fwd.reduction_count = reduction.reductions as u64;
@@ -634,75 +616,4 @@ pub async fn messages(
     });
 
     Ok(Sse::new(stream))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_model_present() {
-        let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[]}"#;
-        assert_eq!(extract_model(body), "claude-sonnet-5");
-    }
-
-    #[test]
-    fn test_extract_model_with_slash() {
-        let body = r#"{"model":"cx/gpt-5.6-sol","messages":[]}"#;
-        assert_eq!(extract_model(body), "cx/gpt-5.6-sol");
-    }
-
-    #[test]
-    fn test_extract_model_missing() {
-        let body = r#"{"max_tokens":1024}"#;
-        assert_eq!(extract_model(body), "unknown");
-    }
-
-    #[test]
-    fn test_extract_model_empty_body() {
-        assert_eq!(extract_model(""), "unknown");
-    }
-
-    #[test]
-    fn test_extract_model_date_suffix_preserved() {
-        let body = r#"{"model":"claude-sonnet-5-20251001","messages":[]}"#;
-        assert_eq!(extract_model(body), "claude-sonnet-5-20251001");
-    }
-
-    #[test]
-    fn test_extract_model_key_in_string_value_not_matched() {
-        let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":"which model to use"}]}"#;
-        assert_eq!(extract_model(body), "claude-sonnet-5");
-    }
-
-    #[test]
-    fn test_extract_model_with_escaped_quotes() {
-        let body = r#"{"model":"claude-sonnet-5","messages":[{"role":"user","content":"he said: \"which model?\""}]}"#;
-        assert_eq!(extract_model(body), "claude-sonnet-5");
-    }
-
-    // --- is_streaming_request tests ---
-
-    #[test]
-    fn stream_true() {
-        let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"stream":true,"messages":[]}"#;
-        assert!(is_streaming_request(body));
-    }
-
-    #[test]
-    fn stream_false() {
-        let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"stream":false,"messages":[]}"#;
-        assert!(!is_streaming_request(body));
-    }
-
-    #[test]
-    fn stream_omitted_is_false() {
-        let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[]}"#;
-        assert!(!is_streaming_request(body));
-    }
-
-    #[test]
-    fn stream_malformed_is_false() {
-        assert!(!is_streaming_request("{broken"));
-    }
 }
