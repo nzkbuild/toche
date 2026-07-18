@@ -1,7 +1,7 @@
 use axum::http::HeaderMap;
 
-use crate::cache::breakpoint::BreakpointPlan;
 use crate::cache;
+use crate::cache::breakpoint::BreakpointPlan;
 use crate::protocol::{Protocol, ResponseHeaders};
 use crate::shield;
 
@@ -44,11 +44,7 @@ impl Protocol for AnthropicProtocol {
         }
     }
 
-    fn inject_cache_control(
-        &self,
-        body: &str,
-        plan: &BreakpointPlan,
-    ) -> Result<String, String> {
+    fn inject_cache_control(&self, body: &str, plan: &BreakpointPlan) -> Result<String, String> {
         cache::inject::inject_cache_control(body, plan)
     }
 

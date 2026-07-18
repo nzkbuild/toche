@@ -8,6 +8,7 @@ pub mod identity;
 pub mod integrations;
 pub mod meter;
 pub mod profiles;
+pub mod protocol;
 pub mod reduce;
 pub mod safe_cache;
 pub mod setup;

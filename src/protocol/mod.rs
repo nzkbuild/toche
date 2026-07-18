@@ -38,11 +38,7 @@ pub trait Protocol: Send + Sync {
     /// positions specified by the breakpoint plan.
     ///
     /// Returns the original body unchanged if the plan has no breakpoints.
-    fn inject_cache_control(
-        &self,
-        body: &str,
-        plan: &BreakpointPlan,
-    ) -> Result<String, String>;
+    fn inject_cache_control(&self, body: &str, plan: &BreakpointPlan) -> Result<String, String>;
 
     /// Check whether the request body indicates a streaming request.
     fn is_streaming(&self, body: &str) -> bool;

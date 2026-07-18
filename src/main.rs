@@ -11,6 +11,7 @@ mod identity;
 mod integrations;
 mod meter;
 mod profiles;
+mod protocol;
 mod reduce;
 mod safe_cache;
 mod setup;
