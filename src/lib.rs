@@ -6,4 +6,5 @@ pub mod graphify;
 pub mod profiles;
 pub mod reduce;
 pub mod safe_cache;
+pub mod setup;
 pub mod shield;

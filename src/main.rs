@@ -11,6 +11,7 @@ mod meter;
 mod profiles;
 mod reduce;
 mod safe_cache;
+mod setup;
 mod shield;
 
 #[derive(Parser)]

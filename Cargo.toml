@@ -25,6 +25,8 @@ hex = "0.4"
 regex = "1"
 lazy_static = "1.5"
 which = "7"
+inquire = "0.9.4"
+toml_edit = "0.25.13"
 
 [dev-dependencies]
 tempfile = "3"
