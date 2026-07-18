@@ -6,7 +6,7 @@
 
 ## M08 implementation commit SHA
 
-`<fill after commit>`
+`a68238b`
 
 ## Base commit SHA
 
