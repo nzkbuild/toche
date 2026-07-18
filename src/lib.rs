@@ -3,6 +3,7 @@ pub mod config;
 pub mod continuity;
 pub mod efficiency;
 pub mod graphify;
+pub mod integrations;
 pub mod profiles;
 pub mod reduce;
 pub mod safe_cache;

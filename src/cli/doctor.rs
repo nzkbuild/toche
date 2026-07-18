@@ -1,5 +1,5 @@
-use crate::cli::connect::points_to_toche;
 use crate::config::loader::config_dir;
+use crate::integrations::points_to_toche;
 
 pub async fn run() -> anyhow::Result<()> {
     println!("Toche Doctor");

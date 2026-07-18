@@ -1,6 +1,5 @@
-use anyhow::Context;
-
-use crate::config::utils;
+use crate::integrations::ConnectOutcome;
+use crate::integrations::claude::config;
 
 pub async fn run(agent: Option<&str>) -> anyhow::Result<()> {
     let agent = agent.unwrap_or("claude");
@@ -11,29 +10,10 @@ pub async fn run(agent: Option<&str>) -> anyhow::Result<()> {
     }
 }
 
-const TOCHE_URL: &str = "http://127.0.0.1:8743";
-
-pub(crate) fn points_to_toche(settings: &serde_json::Value) -> bool {
-    let base_url_toche = settings
-        .get("baseURL")
-        .and_then(|v| v.as_str())
-        .map(|s| s.contains("127.0.0.1:8743"))
-        .unwrap_or(false);
-    let env_url_toche = settings
-        .pointer("/env/ANTHROPIC_BASE_URL")
-        .and_then(|v| v.as_str())
-        .map(|s| s.contains("127.0.0.1:8743"))
-        .unwrap_or(false);
-    base_url_toche || env_url_toche
-}
-
 async fn connect_claude() -> anyhow::Result<()> {
-    let settings_path = utils::home_dir().join(".claude").join("settings.json");
-    let backup_path = settings_path.with_extension("json.toche-backup");
-
-    // Verify the gateway is running and ready before modifying anything.
-    let ready_url = format!("{TOCHE_URL}/ready");
-    match reqwest::get(&ready_url).await {
+    // Pre-connect gateway readiness check
+    let ready_url = "http://127.0.0.1:8743/ready";
+    match reqwest::get(ready_url).await {
         Ok(resp) if resp.status().is_success() => {
             let body: serde_json::Value = resp.json().await.unwrap_or_default();
             let status = body.get("status").and_then(|v| v.as_str()).unwrap_or("");
@@ -51,73 +31,26 @@ async fn connect_claude() -> anyhow::Result<()> {
         }
         _ => {
             anyhow::bail!(
-                "Toche gateway is not running at {TOCHE_URL}. Run `toche` without arguments to start it first."
+                "Toche gateway is not running at http://127.0.0.1:8743. Run `toche` without arguments to start it first."
             );
         }
     }
 
-    // Check if already connected
-    if settings_path.exists() {
-        let current = utils::read_jsonc(&settings_path).context("Failed to parse settings.json")?;
-        if points_to_toche(&current) {
+    match config::connect()? {
+        ConnectOutcome::AlreadyConnected => {
             println!("Claude Code is already connected to Toche.");
-            return Ok(());
         }
-        // Only create a backup if one doesn't already exist — the first
-        // backup is the user's original upstream config and must not be
-        // overwritten by subsequent connect runs.
-        if !backup_path.exists() {
-            std::fs::copy(&settings_path, &backup_path)
-                .context("Failed to backup settings.json")?;
-        }
-    }
-
-    // Read settings (JSONC-tolerant)
-    let mut settings = if settings_path.exists() {
-        utils::read_jsonc(&settings_path).context("Failed to parse settings.json")?
-    } else {
-        serde_json::json!({})
-    };
-
-    // Persist the original upstream URL before overwriting, so disconnect can
-    // restore it even if the backup file is deleted.
-    let original_env_url = settings
-        .pointer("/env/ANTHROPIC_BASE_URL")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-
-    // Set Toche as base URL (both top-level and env block — env takes precedence
-    // in Claude Code, but we set both so disconnect can restore cleanly).
-    if let Some(obj) = settings.as_object_mut() {
-        obj.insert(
-            "baseURL".into(),
-            serde_json::Value::String(TOCHE_URL.into()),
-        );
-        // Also set env.ANTHROPIC_BASE_URL since it overrides top-level baseURL
-        let env = obj
-            .entry(String::from("env"))
-            .or_insert_with(|| serde_json::json!({}));
-        if let Some(env_obj) = env.as_object_mut() {
-            env_obj.insert(
-                "ANTHROPIC_BASE_URL".into(),
-                serde_json::Value::String(format!("{TOCHE_URL}/v1")),
-            );
+        ConnectOutcome::Connected {
+            settings_path,
+            backup_path,
+        } => {
+            println!("Claude Code now routing through Toche (http://127.0.0.1:8743).");
+            if let Some(bak) = backup_path {
+                println!("Backup saved to: {bak}");
+            }
+            let _ = &settings_path; // used in message context
         }
     }
 
-    // Atomic write back
-    let content = serde_json::to_string_pretty(&settings)?;
-    utils::atomic_write(&settings_path, &content)?;
-
-    // Save the original ANTHROPIC_BASE_URL so disconnect can restore it even
-    // if the backup file is deleted. Stored inside ~/.toche/ not alongside
-    // settings.json, so it's less likely to be accidentally removed.
-    if let Some(ref url) = original_env_url {
-        let saved_path = crate::profiles::loader::config_dir().join("pre_toche_url.txt");
-        let _ = std::fs::write(&saved_path, url);
-    }
-
-    println!("Claude Code now routing through Toche ({TOCHE_URL}).");
-    println!("Backup saved to: {}", backup_path.display());
     Ok(())
 }

@@ -7,6 +7,7 @@ mod continuity;
 mod efficiency;
 mod gateway;
 mod graphify;
+mod integrations;
 mod meter;
 mod profiles;
 mod reduce;
@@ -39,10 +40,24 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Point Claude Code to Toche
-    Connect { agent: Option<String> },
-    /// Restore Claude Code to direct upstream
-    Disconnect { agent: Option<String> },
+    /// Route a client through Toche (persistent mode)
+    Connect {
+        /// Client to connect (default: claude)
+        agent: Option<String>,
+    },
+    /// Remove Toche routing from a client
+    Disconnect {
+        /// Client to disconnect (default: claude)
+        agent: Option<String>,
+    },
+    /// Run a client in managed mode through Toche
+    Run {
+        /// Client to run (supported: claude)
+        client: String,
+        /// Arguments to forward to the client
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Verify Toche installation and configuration
     Doctor,
     /// Show gateway status
@@ -186,6 +201,7 @@ async fn main() -> anyhow::Result<()> {
         }) => cli::setup::run(force, dry_run, json).await,
         Some(Commands::Connect { agent }) => cli::connect::run(agent.as_deref()).await,
         Some(Commands::Disconnect { agent }) => cli::disconnect::run(agent.as_deref()).await,
+        Some(Commands::Run { client, args }) => cli::run::run(&client, args).await,
         Some(Commands::Doctor) => cli::doctor::run().await,
         Some(Commands::Status) => cli::status::run().await,
         Some(Commands::Stats { json, entries }) => cli::stats::run(json, entries).await,
