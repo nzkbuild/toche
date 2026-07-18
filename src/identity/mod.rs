@@ -192,6 +192,35 @@ pub fn compute_config_snapshot(config_toml: &str) -> String {
     hex::encode(&hasher.finalize()[..8])
 }
 
+/// Compute a deterministic policy hash from the resolved policy fields.
+///
+/// This encodes the effective optimization policy so that requests with
+/// different policy configurations never share flights, even when the
+/// upstream, trust domain, and request body are identical.
+///
+/// Input is a flat string of key-value pairs serialized from the policy
+/// fields on `ResolvedIntegration`. It is NOT a hash of the raw TOML —
+/// only the effective values after resolution are used.
+pub fn compute_policy_hash(
+    cache_enabled: bool,
+    cache_mode: &str,
+    cache_breakpoint: &str,
+    reduce_enabled: bool,
+    efficiency_mode: &str,
+    safe_cache_enabled: bool,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"toche-policy-v1:");
+    hasher.update(format!("cache:{cache_enabled}:{cache_mode}:{cache_breakpoint}").as_bytes());
+    hasher.update(b"|");
+    hasher.update(format!("reduce:{reduce_enabled}").as_bytes());
+    hasher.update(b"|");
+    hasher.update(format!("efficiency:{efficiency_mode}").as_bytes());
+    hasher.update(b"|");
+    hasher.update(format!("safe_cache:{safe_cache_enabled}").as_bytes());
+    hex::encode(&hasher.finalize()[..8])
+}
+
 /// Compute a deterministic workspace ID from the project path.
 pub fn workspace_id_from_path(path: &str) -> String {
     let mut hasher = Sha256::new();
@@ -384,6 +413,48 @@ mod tests {
         assert_eq!(Attribution::WorkspaceLevel.to_string(), "workspace-level");
         assert_eq!(Attribution::Inferred.to_string(), "inferred");
         assert_eq!(Attribution::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    fn policy_hash_is_deterministic() {
+        let h1 = compute_policy_hash(true, "auto", "standard", true, "concise", true);
+        let h2 = compute_policy_hash(true, "auto", "standard", true, "concise", true);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn policy_hash_differs_by_cache_mode() {
+        let h1 = compute_policy_hash(true, "auto", "standard", true, "normal", true);
+        let h2 = compute_policy_hash(true, "observe", "standard", true, "normal", true);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn policy_hash_differs_by_efficiency_mode() {
+        let h1 = compute_policy_hash(true, "auto", "standard", true, "concise", true);
+        let h2 = compute_policy_hash(true, "auto", "standard", true, "careful", true);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn policy_hash_differs_by_reduce_enabled() {
+        let h1 = compute_policy_hash(true, "auto", "standard", true, "normal", true);
+        let h2 = compute_policy_hash(true, "auto", "standard", false, "normal", true);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn policy_hash_differs_by_safe_cache() {
+        let h1 = compute_policy_hash(true, "auto", "standard", true, "normal", true);
+        let h2 = compute_policy_hash(true, "auto", "standard", true, "normal", false);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn policy_hash_is_16_hex() {
+        let h = compute_policy_hash(true, "auto", "standard", true, "normal", true);
+        assert_eq!(h.len(), 16);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

@@ -30,6 +30,16 @@ fn extract_model(body: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// Check whether the request body has `stream: true`.
+/// Streaming requests bypass the flight registry entirely because
+/// buffered-after-completion replay is not transparent streaming coalescing.
+fn is_streaming_request(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("stream")?.as_bool())
+        .unwrap_or(false)
+}
+
 /// Check whether a bypass header is set to "true" (case-insensitive).
 fn is_bypassed(headers: &HeaderMap, name: &str) -> bool {
     headers
@@ -159,6 +169,31 @@ pub async fn messages(
         &secret_ref_display,
     );
 
+    let policy_hash = identity::compute_policy_hash(
+        resolved.cache.as_ref().is_some_and(|c| c.enabled),
+        resolved.cache.as_ref().map_or("observe", |c| match c.mode {
+            crate::config::toche_config::CacheMode::Observe => "observe",
+            crate::config::toche_config::CacheMode::Auto => "auto",
+        }),
+        resolved
+            .cache
+            .as_ref()
+            .map_or("standard", |c| match c.breakpoint {
+                crate::config::toche_config::CacheBreakpoint::Standard => "standard",
+                crate::config::toche_config::CacheBreakpoint::SystemOnly => "system_only",
+            }),
+        resolved.reduce.is_some(),
+        resolved
+            .efficiency
+            .as_ref()
+            .map_or("normal", |e| match e.mode {
+                crate::efficiency::config::EfficiencyMode::Normal => "normal",
+                crate::efficiency::config::EfficiencyMode::Concise => "concise",
+                crate::efficiency::config::EfficiencyMode::Careful => "careful",
+            }),
+        resolved.safe_cache.as_ref().is_some_and(|s| s.enabled),
+    );
+
     let external_request_id = identity::extract_external_request_id(&headers);
     let conversation_id = identity::extract_conversation_id(&headers);
 
@@ -223,13 +258,23 @@ pub async fn messages(
     let bypass_efficiency = bypass_all || is_bypassed(&headers, "x-toche-bypass-efficiency");
     let bypass_cache = bypass_all || is_bypassed(&headers, "x-toche-bypass-cache");
 
+    let is_streaming = is_streaming_request(&body);
+
     let fingerprint = shield::fingerprint::compute(&body);
 
-    let shield_result = if bypass_shield {
+    // Streaming requests must bypass the flight registry.
+    // Buffered-after-completion replay is not transparent streaming coalescing.
+    // Streaming coalescing with fan-out is deferred to a future milestone.
+    let shield_result = if bypass_shield || is_streaming {
         shield::coalesce::CoalesceResult::Forward { key: String::new() }
     } else {
         shield::coalesce::store()
-            .try_acquire(&upstream_url, &fingerprint, id_ctx.trust_domain_id.as_str())
+            .try_acquire(
+                &upstream_url,
+                &fingerprint,
+                id_ctx.trust_domain_id.as_str(),
+                &policy_hash,
+            )
             .await
     };
 
@@ -634,5 +679,30 @@ mod tests {
     fn test_extract_model_with_escaped_quotes() {
         let body = r#"{"model":"claude-sonnet-5","messages":[{"role":"user","content":"he said: \"which model?\""}]}"#;
         assert_eq!(extract_model(body), "claude-sonnet-5");
+    }
+
+    // --- is_streaming_request tests ---
+
+    #[test]
+    fn stream_true() {
+        let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"stream":true,"messages":[]}"#;
+        assert!(is_streaming_request(body));
+    }
+
+    #[test]
+    fn stream_false() {
+        let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"stream":false,"messages":[]}"#;
+        assert!(!is_streaming_request(body));
+    }
+
+    #[test]
+    fn stream_omitted_is_false() {
+        let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[]}"#;
+        assert!(!is_streaming_request(body));
+    }
+
+    #[test]
+    fn stream_malformed_is_false() {
+        assert!(!is_streaming_request("{broken"));
     }
 }
