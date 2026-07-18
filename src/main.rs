@@ -21,7 +21,7 @@ mod shield;
 #[command(
     name = "toche",
     version,
-    about = "Local context-efficiency gateway for Claude Code"
+    about = "Local context-efficiency gateway for Claude Code and Codex"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -44,17 +44,17 @@ enum Commands {
     },
     /// Route a client through Toche (persistent mode)
     Connect {
-        /// Client to connect (default: claude)
+        /// Client to connect (default: claude, supported: claude, codex)
         agent: Option<String>,
     },
     /// Remove Toche routing from a client
     Disconnect {
-        /// Client to disconnect (default: claude)
+        /// Client to disconnect (default: claude, supported: claude, codex)
         agent: Option<String>,
     },
     /// Run a client in managed mode through Toche
     Run {
-        /// Client to run (supported: claude)
+        /// Client to run (supported: claude, codex)
         client: String,
         /// Arguments to forward to the client
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

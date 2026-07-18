@@ -78,6 +78,36 @@ pub async fn run() -> anyhow::Result<()> {
     println!("Backup file: {}", backup_path.display());
     println!("  exists: {}", backup_path.exists());
 
+    // Codex integration
+    println!();
+    let codex_dir = crate::integrations::codex::discovery::codex_home();
+    println!("Codex directory: {}", codex_dir.display());
+    println!("  exists: {}", codex_dir.exists());
+
+    let codex_config_path = codex_dir.join("config.toml");
+    if codex_config_path.exists() {
+        match std::fs::read_to_string(&codex_config_path) {
+            Ok(content) => {
+                let pointing = content.contains("127.0.0.1:8743");
+                println!("  points to Toche: {pointing}");
+            }
+            Err(e) => {
+                println!("  error reading config.toml: {e}");
+            }
+        }
+    } else {
+        println!("  config.toml: not found");
+    }
+
+    let codex_backup = codex_dir.join("config.toml.toche-backup");
+    println!("Codex backup file: {}", codex_backup.display());
+    println!("  exists: {}", codex_backup.exists());
+
+    let codex_bin = which::which("codex")
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "not installed".into());
+    println!("Codex binary: {}", codex_bin);
+
     // Graphify
     println!();
     let graphify = which::which("graphify")
