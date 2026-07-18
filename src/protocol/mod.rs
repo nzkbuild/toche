@@ -45,3 +45,4 @@ pub trait Protocol: Send + Sync {
 }
 
 pub mod anthropic;
+pub mod openai_responses;

@@ -18,7 +18,9 @@ use crate::identity::{self, IdentityContext, RequestId};
 use crate::meter::db::{LedgerDb, NewLedgerRecord};
 use crate::meter::pricing::PricingMap;
 use crate::meter::recorder::{RequestTimer, current_project_path, estimate_tokens, record_request};
-use crate::protocol::{Protocol, anthropic::AnthropicProtocol};
+use crate::protocol::{
+    Protocol, anthropic::AnthropicProtocol, openai_responses::OpenAiResponsesProtocol,
+};
 use crate::reduce;
 use crate::safe_cache;
 use crate::shield;
@@ -602,6 +604,182 @@ pub async fn messages(
             reduction_count,
             efficiency_mode,
             local_cache_hit: forwarded.local_cache_hit,
+            runtime_id: id_ctx_for_ledger.runtime_id.as_str().to_string(),
+            request_id: id_ctx_for_ledger.request_id.as_str().to_string(),
+            integration_id: id_ctx_for_ledger.integration_id,
+            upstream_id: id_ctx_for_ledger.upstream_id,
+            trust_domain_id: id_ctx_for_ledger.trust_domain_id.as_str().to_string(),
+            config_snapshot_hash: id_ctx_for_ledger.config_snapshot_hash,
+            attribution: id_ctx_for_ledger.attribution.to_string(),
+        };
+        if let Err(e) = record_request(&db, &pricing, record) {
+            error!("Failed to record to ledger: {e}");
+        }
+    });
+
+    Ok(Sse::new(stream))
+}
+
+pub async fn responses(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    let timer = RequestTimer::start();
+    let request_id = RequestId::new();
+
+    let resolved = load_default_integration().map_err(|e| {
+        error!("Failed to load default integration: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let protocol = OpenAiResponsesProtocol;
+
+    let model = protocol.extract_model(&body);
+    let integration_name = resolved.name.clone();
+    let input_tokens = estimate_tokens(&body);
+
+    let upstream_url = format!(
+        "{}{}",
+        resolved.upstream_url.trim_end_matches('/'),
+        protocol.path()
+    );
+
+    let workspace_path = current_project_path();
+    let workspace_id = if workspace_path.is_empty() {
+        None
+    } else {
+        Some(identity::workspace_id_from_path(&workspace_path))
+    };
+
+    let secret_ref_display = resolved.auth.secret_ref.to_string();
+    let trust_domain_id = identity::derive_trust_domain_id(
+        &resolved.id,
+        &resolved.name,
+        &resolved.id,
+        &secret_ref_display,
+    );
+
+    let external_request_id = identity::extract_external_request_id(&headers);
+    let conversation_id = identity::extract_conversation_id(&headers);
+
+    let id_ctx = IdentityContext {
+        runtime_id: state.runtime_id.clone(),
+        request_id: request_id.clone(),
+        external_request_id,
+        integration_id: resolved.id.clone(),
+        integration_name: resolved.name.clone(),
+        upstream_id: resolved.id.clone(),
+        upstream_name: resolved.name.clone(),
+        trust_domain_id: trust_domain_id.clone(),
+        instance_id: None,
+        conversation_id,
+        workspace_id,
+        policy_ids: vec![],
+        config_snapshot_hash: state.config_snapshot_hash.clone(),
+        attribution: identity::Attribution::Unknown,
+    };
+
+    info!(
+        "Request {} (responses): integration={}, model={}",
+        request_id, integration_name, model
+    );
+
+    let client = Client::builder()
+        .build()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut upstream_headers = HeaderMap::new();
+    for (name, value) in &headers {
+        let name_str = name.as_str().to_lowercase();
+        if matches!(name_str.as_str(), "host" | "content-length") {
+            continue;
+        }
+        upstream_headers.insert(name.clone(), value.clone());
+    }
+
+    for (header_name, header_value) in &resolved.upstream_headers {
+        upstream_headers.insert(
+            axum::http::HeaderName::from_bytes(header_name.as_bytes())
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            axum::http::HeaderValue::from_str(header_value)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        );
+    }
+
+    if let Some(value) = &resolved.auth.value {
+        upstream_headers.insert(
+            axum::http::HeaderName::from_bytes(resolved.auth.header_name.as_bytes())
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            axum::http::HeaderValue::from_str(value)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        );
+    }
+
+    let _is_streaming = protocol.is_streaming(&body);
+
+    info!("Forwarding (responses) to upstream: {upstream_url}");
+
+    let fwd = forward_to_upstream(
+        &client,
+        &upstream_url,
+        upstream_headers,
+        body.clone(),
+        &protocol,
+    )
+    .await?;
+
+    let status_str = if fwd.status >= 200 && fwd.status < 300 {
+        "success"
+    } else {
+        "error"
+    };
+    let latency_ms = timer.elapsed_ms();
+
+    let body_bytes = fwd.body_bytes;
+    let stream = futures::stream::once({
+        let data = String::from_utf8_lossy(&body_bytes).to_string();
+        async move { Ok(Event::default().data(data)) }
+    });
+
+    continuity::observer::observe_response(&body_bytes);
+
+    let model_clone = model;
+    let integration_name_clone = integration_name;
+    let status_clone = status_str.to_string();
+    let project_path = current_project_path();
+    let id_ctx_for_ledger = id_ctx.clone();
+
+    tokio::spawn(async move {
+        let db_path = config_dir().join("ledger.db");
+        let db = match LedgerDb::open(&db_path) {
+            Ok(db) => db,
+            Err(e) => {
+                error!("Failed to open ledger DB: {e}");
+                return;
+            }
+        };
+        let pricing = PricingMap::load_embedded();
+        let output_tokens = estimate_tokens(&String::from_utf8_lossy(&body_bytes));
+
+        let record = NewLedgerRecord {
+            timestamp: chrono::Utc::now(),
+            model: model_clone,
+            profile_name: integration_name_clone,
+            input_tokens,
+            output_tokens,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            coalesced_count: 0,
+            latency_ms,
+            status: status_clone,
+            cost: None,
+            project_path,
+            reduction_input_tokens: 0,
+            reduction_output_tokens: 0,
+            reduction_count: 0,
+            efficiency_mode: String::new(),
+            local_cache_hit: false,
             runtime_id: id_ctx_for_ledger.runtime_id.as_str().to_string(),
             request_id: id_ctx_for_ledger.request_id.as_str().to_string(),
             integration_id: id_ctx_for_ledger.integration_id,

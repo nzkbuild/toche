@@ -32,6 +32,10 @@ pub async fn serve() -> anyhow::Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let app = Router::new()
         .route("/v1/messages", axum::routing::post(super::routes::messages))
+        .route(
+            "/v1/responses",
+            axum::routing::post(super::routes::responses),
+        )
         .route("/health", axum::routing::get(health))
         .route("/ready", axum::routing::get(ready))
         .with_state(state);
