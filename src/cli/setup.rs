@@ -2,13 +2,19 @@ use tracing::info;
 
 use crate::setup::{SetupOutcome, SetupTransaction};
 
-pub async fn run(force: bool) -> anyhow::Result<()> {
+pub async fn run(force: bool, dry_run: bool, json: bool) -> anyhow::Result<()> {
     info!("Starting Toche setup...");
 
-    let tx = SetupTransaction::new(false, force);
+    let tx = SetupTransaction::new(true, force)
+        .with_dry_run(dry_run)
+        .with_json(json);
+
     match tx.run()? {
         SetupOutcome::NoOp => {
             println!("Setup complete — no changes were necessary.");
+        }
+        SetupOutcome::DryRun { .. } => {
+            // Preview was already printed by the transaction engine
         }
         SetupOutcome::Applied { config, record } => {
             let default_name = config

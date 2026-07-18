@@ -27,11 +27,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Import existing Claude Code gateway configuration
+    /// Configure Toche integrations and upstreams
     Setup {
-        /// Force overwrite of existing profiles.toml
+        /// Force overwrite of existing config.toml (backup is created)
         #[arg(long)]
         force: bool,
+        /// Preview changes without writing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Output machine-readable JSON (use with --dry-run)
+        #[arg(long)]
+        json: bool,
     },
     /// Point Claude Code to Toche
     Connect { agent: Option<String> },
@@ -173,7 +179,11 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Setup { force }) => cli::setup::run(force).await,
+        Some(Commands::Setup {
+            force,
+            dry_run,
+            json,
+        }) => cli::setup::run(force, dry_run, json).await,
         Some(Commands::Connect { agent }) => cli::connect::run(agent.as_deref()).await,
         Some(Commands::Disconnect { agent }) => cli::disconnect::run(agent.as_deref()).await,
         Some(Commands::Doctor) => cli::doctor::run().await,
