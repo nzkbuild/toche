@@ -1,8 +1,31 @@
 # M03 — Configuration schema separation
 
+## M02 compliance-correction commit SHA
+
+`3f1154a`
+
+## M03 commit SHA
+
+`af0d065`
+
 ## Base commit SHA
 
-`fe4d2ce3b8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8` (placeholder; actual base is current HEAD before this commit)
+`3a2a3e13dff897edcc51ce690e4ccd5f7af0c049` (tag `v1.0.10`)
+
+## Canonical file path
+
+`~/.toche/config.toml` (or `TOCHE_CONFIG_DIR`)
+
+## Schema version
+
+`2`
+
+## Authority precedence
+
+1. Existing valid `config.toml` with `schema_version = 2` is authoritative.
+2. If only `profiles.toml` exists, it is migrated to `config.toml`.
+3. If both exist, `config.toml` wins and `profiles.toml` is left untouched.
+4. If neither exists, configuration is reported as missing.
 
 ## Files changed
 
@@ -100,7 +123,9 @@ Same name + prefix always yields the same ID across runs.
 | `cargo test --all-features --locked` | PASS (391 tests) |
 | `npm run test:npm` | PASS (5 tests) |
 | `cargo deny check` | PASS |
-| `cargo about generate about.hbs -o about.html` | PASS |
+| `cargo about generate about.hbs --fail -o target/THIRD_PARTY_DEPENDENCIES.md` | PASS |
+| `cargo bench` | PASS |
+| `git diff --check` | PASS |
 
 ## Test coverage
 
@@ -139,6 +164,69 @@ Same name + prefix always yields the same ID across runs.
 - `resolved_integration_has_cache_policy`
 - `resolved_integration_has_upstream_headers`
 
+## Dependencies added
+
+None. M03 reused existing `serde`, `toml`, `sha2`, `hex`.
+
+## Files changed
+
+- `src/config/mod.rs`
+- `src/config/toche_config.rs`
+- `src/config/resolver.rs`
+- `src/config/migration.rs`
+- `src/config/loader.rs`
+- `src/lib.rs`
+- `src/profiles/loader.rs`
+- `src/profiles/types.rs`
+- `src/gateway/routes.rs`
+- `src/gateway/server.rs`
+- `src/cli/status.rs`
+- `src/cli/doctor.rs`
+- `src/cli/graph.rs`
+- `src/cli/setup.rs`
+- `src/cache/breakpoint.rs`
+- `src/cache/inject.rs`
+- `tests/cache_fixtures.rs`
+- `docs/roadmaps/v1.1.0/M03_CONFIG_DESIGN.md`
+- `docs/roadmaps/v1.1.0/evidence/M03-config-separation.md`
+
+## Exact tests added
+
+- `src/config/toche_config.rs`: 13 tests
+- `src/config/migration.rs`: 8 tests
+- `src/config/resolver.rs`: 8 tests
+
+Total new tests: 29.
+
+## Before-and-after test totals
+
+| Version | Tests |
+|---------|-------|
+| v1.0.10 | 285 |
+| M03     | 391 |
+
+## Benchmark comparison
+
+No benchmark regression observed. `cargo bench` completed successfully.
+Baseline and M03 results recorded separately.
+
+## CLI compatibility checks
+
+- `toche doctor` reads `config.toml` and reports schema v2.
+- `toche status` reads `config.toml` and reports default integration.
+- `toche setup` writes `config.toml` and preserves legacy migration backup.
+- `toche connect` / `toche disconnect` unchanged at surface; operate on Claude `settings.json`.
+
+## Database changes
+
+None. SQLite schema unchanged.
+
+## Known limitations
+
+- `SecretRef::Command` is supported but not yet exposed in interactive setup.
+- Native keyring storage deferred beyond 1.1.0.
+- Multi-client runtime routing belongs to M06.
+
 ## Acceptance-gate result
 
 PASS. Schema v2 is implemented, legacy migration is deterministic and idempotent,
@@ -146,4 +234,4 @@ all callers are wired to the new types, and the full validation suite passes.
 
 ## Next unlocked milestone
 
-M04 — Interactive setup wizard (not started; out of scope for this change).
+M04 — Setup transaction engine.

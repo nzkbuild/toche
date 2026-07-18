@@ -610,4 +610,92 @@ auth_method = { type = "none" }
         assert_eq!(config.integrations[0].name, "custom");
         assert_eq!(config.upstreams[0].url, "https://api.custom.com");
     }
+
+    #[test]
+    fn detect_and_load_rejects_malformed_v2() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Malformed config.toml
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "this is not valid toml ::::",
+        )
+        .unwrap();
+
+        // Valid legacy profiles.toml
+        std::fs::write(
+            dir.path().join("profiles.toml"),
+            r#"
+default = "default"
+
+[[profiles]]
+name = "default"
+upstream_url = "https://api.anthropic.com"
+auth_method = { type = "none" }
+"#,
+        )
+        .unwrap();
+
+        // Should fail because config.toml exists but is malformed, not fall back
+        let result = detect_and_load(dir.path());
+        assert!(result.is_err());
+        // Legacy file should remain untouched
+        assert!(dir.path().join("profiles.toml").exists());
+    }
+
+    #[test]
+    fn detect_and_load_rejects_unsupported_schema() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // config.toml with unsupported schema version
+        std::fs::write(
+            dir.path().join("config.toml"),
+            r#"schema_version = 99
+
+[runtime]
+port = 8743
+listen_address = "127.0.0.1"
+request_timeout_ms = 300000
+"#,
+        )
+        .unwrap();
+
+        let result = detect_and_load(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn detect_and_load_backup_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Pre-existing backup
+        std::fs::write(
+            dir.path().join("profiles.toml.v1.bak"),
+            "original backup content",
+        )
+        .unwrap();
+
+        // Legacy profiles.toml
+        std::fs::write(
+            dir.path().join("profiles.toml"),
+            r#"
+default = "default"
+
+[[profiles]]
+name = "default"
+upstream_url = "https://api.anthropic.com"
+auth_method = { type = "none" }
+"#,
+        )
+        .unwrap();
+
+        detect_and_load(dir.path()).unwrap();
+
+        // Backup should still contain the original content
+        let backup_content =
+            std::fs::read_to_string(dir.path().join("profiles.toml.v1.bak")).unwrap();
+        assert_eq!(backup_content, "original backup content");
+        // Legacy file should be removed after migration
+        assert!(!dir.path().join("profiles.toml").exists());
+    }
 }
