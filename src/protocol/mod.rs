@@ -47,3 +47,5 @@ pub trait Protocol: Send + Sync {
     /// Check whether the request body indicates a streaming request.
     fn is_streaming(&self, body: &str) -> bool;
 }
+
+pub mod anthropic;
