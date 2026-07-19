@@ -2,7 +2,7 @@
 
 All notable changes to Toche are documented in this file.
 
-## [1.1.0] — Unreleased
+## [1.1.0] — 2026-07-20
 
 ### Added
 
@@ -70,6 +70,16 @@ All notable changes to Toche are documented in this file.
 - Waiter cancellation no longer corrupts the leader's upstream request.
 - Secret values are never placed in logs, IDs, hashes, database diagnostics,
   or receipts.
+
+### Summary
+
+This release transforms Toche from a Claude Code-specific local gateway into a
+safe multi-client AI workload runtime. One local Toche instance can now serve
+Claude Code and Codex CLI simultaneously, with trust-domain isolation preventing
+cross-client cache or flight sharing. The configuration schema, protocol-driver
+architecture, and rerunnable setup engine establish the foundation for future
+client and protocol support. All exiting 1.0.x configurations migrate
+automatically and the persistent two-terminal workflow remains first-class.
 
 ## [1.0.10] - 2026-07-17
 
