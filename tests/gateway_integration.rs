@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Mutex;
 use wiremock::MockServer;
 use wiremock::matchers::{method, path};
 use wiremock::ResponseTemplate;
@@ -9,19 +8,21 @@ use toche::config::toche_config::derive_id;
 use toche::gateway::build_router;
 
 /// Serialize tests that mutate `TOCHE_CONFIG_DIR` env var.
-static CONFIG_LOCK: Mutex<()> = Mutex::new(());
+static CONFIG_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// A minimal valid config.toml which sets TOCHE_CONFIG_DIR, writes config,
-/// builds the router, binds to a random port, and spawns the server.
-/// Returns the bound address, the server's join handle, and the config lock guard.
-/// The guard MUST be held for the gateway's lifetime to prevent TOCHE_CONFIG_DIR
-/// from being overwritten by another test running in parallel.
-async fn spawn_gateway(config_dir: &Path, config_toml: &str) -> (SocketAddr, tokio::task::JoinHandle<()>, std::sync::MutexGuard<'static, ()>) {
+/// Build the router (scoping the config lock to just the build), bind,
+/// and spawn the server. Does NOT hold the config lock across awaits.
+/// Callers that read the ledger must hold `CONFIG_LOCK` themselves to prevent
+/// `TOCHE_CONFIG_DIR` from being overwritten by another test before a spawned
+/// ledger write completes.
+async fn spawn_gateway(config_dir: &Path, config_toml: &str) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     std::fs::create_dir_all(config_dir).unwrap();
     std::fs::write(config_dir.join("config.toml"), config_toml).unwrap();
 
-    let lock = CONFIG_LOCK.lock().unwrap();
-    let app = build_router(Some(config_dir.to_path_buf())).unwrap();
+    let app = {
+        let _lock = CONFIG_LOCK.lock().await;
+        build_router(Some(config_dir.to_path_buf())).unwrap()
+    };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -30,7 +31,7 @@ async fn spawn_gateway(config_dir: &Path, config_toml: &str) -> (SocketAddr, tok
     });
     // Give the server a moment to start
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    (addr, handle, lock)
+    (addr, handle)
 }
 
 /// Build and spawn a gateway WITHOUT holding the config lock.
@@ -44,9 +45,27 @@ async fn spawn_gateway_no_ledger(config_dir: &Path, config_toml: &str) -> (Socke
     std::fs::write(config_dir.join("config.toml"), config_toml).unwrap();
 
     let app = {
-        let _lock = CONFIG_LOCK.lock().unwrap();
+        let _lock = CONFIG_LOCK.lock().await;
         build_router(Some(config_dir.to_path_buf())).unwrap()
     };
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    (addr, handle)
+}
+
+/// Build and spawn a gateway while the caller already holds CONFIG_LOCK.
+/// This keeps the lock held for the gateway's lifetime so that ledger
+/// writes go to the correct directory.
+async fn spawn_gateway_under_lock(config_dir: &Path, config_toml: &str) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    std::fs::create_dir_all(config_dir).unwrap();
+    std::fs::write(config_dir.join("config.toml"), config_toml).unwrap();
+
+    let app = build_router(Some(config_dir.to_path_buf())).unwrap();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -135,7 +154,7 @@ async fn runtime_before_setup_status_returns_active_zero() {
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path().join("toche");
     let config = config_without_integration();
-    let (addr, _handle, _lock) = spawn_gateway(&config_dir, config).await;
+    let (addr, _handle) = spawn_gateway(&config_dir, config).await;
 
     let resp = reqwest::get(format!("http://{addr}/status")).await.unwrap();
     assert_eq!(resp.status(), 200);
@@ -262,7 +281,7 @@ id = "c9d0e1f2"
 name = "default"
 "#
     );
-    let (addr, _handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -303,7 +322,7 @@ async fn endpoint_fails_mid_stream_partial_response_not_cached() {
         .await;
 
     let config = config_with_upstream(&mock.uri());
-    let (addr, _handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -388,7 +407,7 @@ name = "default"
         mock.uri()
     );
 
-    let (addr, _handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
 
     let client = reqwest::Client::new();
 
@@ -439,8 +458,12 @@ async fn no_usage_metadata_reports_usage_as_unknown() {
         .mount(&mock)
         .await;
 
+    // Hold the config lock to prevent TOCHE_CONFIG_DIR from being overwritten
+    // before spawned ledger writes complete.
+    let _lock = CONFIG_LOCK.lock().await;
+
     let config = config_with_upstream(&mock.uri());
-    let (addr, _handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, _handle) = spawn_gateway_under_lock(&config_dir, &config).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -663,12 +686,12 @@ async fn claude_plus_codex_simultaneous_diff_protocols() {
         .mount(&mock)
         .await;
 
-    // Single gateway serves both protocols — use spawn_gateway with lock
-    // since we read the ledger after
+    // Single gateway serves both protocols — hold lock since we read the ledger
+    let _lock = CONFIG_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path().join("toche");
     let config = config_with_upstream(&mock.uri());
-    let (addr, _handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, _handle) = spawn_gateway_under_lock(&config_dir, &config).await;
 
     let client = reqwest::Client::new();
 
@@ -852,7 +875,9 @@ max_entry_mb = 10
 "#,
         mock.uri()
     );
-    let (addr, _handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    // Hold the config lock — we read the ledger after
+    let _lock = CONFIG_LOCK.lock().await;
+    let (addr, _handle) = spawn_gateway_under_lock(&config_dir, &config).await;
 
     let client = reqwest::Client::new();
 
