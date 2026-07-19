@@ -71,7 +71,7 @@ impl CacheDb {
             )
             .unwrap_or(0);
 
-        const EXPECTED_VERSION: i32 = 9;
+        const EXPECTED_VERSION: i32 = 11;
 
         if current_version > EXPECTED_VERSION {
             anyhow::bail!(
@@ -82,39 +82,34 @@ impl CacheDb {
             );
         }
 
-        // Note: version 1 is the ledger table (managed by meter/db.rs).
-        // Safe-cache table starts at version 8.
-        if current_version < 8 {
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS safe_cache (
-                    id INTEGER PRIMARY KEY,
-                    project_path TEXT NOT NULL,
-                    fingerprint TEXT NOT NULL,
-                    workspace_fingerprint TEXT NOT NULL DEFAULT '',
-                    response_hash TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    status INTEGER NOT NULL DEFAULT 200,
-                    tokens_input INTEGER NOT NULL DEFAULT 0,
-                    tokens_output INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    last_hit_at TEXT NOT NULL,
-                    hit_count INTEGER NOT NULL DEFAULT 0,
-                    UNIQUE(project_path, fingerprint)
-                )",
-                [],
-            )?;
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS cache_rejects (
-                    id INTEGER PRIMARY KEY,
-                    timestamp TEXT NOT NULL,
-                    project_path TEXT NOT NULL,
-                    fingerprint TEXT NOT NULL,
-                    reason TEXT NOT NULL
-                )",
-                [],
-            )?;
-            conn.execute("INSERT INTO schema_version (version) VALUES (8)", [])?;
-        }
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS safe_cache (
+                id INTEGER PRIMARY KEY,
+                project_path TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                workspace_fingerprint TEXT NOT NULL DEFAULT '',
+                response_hash TEXT NOT NULL,
+                model TEXT NOT NULL,
+                status INTEGER NOT NULL DEFAULT 200,
+                tokens_input INTEGER NOT NULL DEFAULT 0,
+                tokens_output INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                last_hit_at TEXT NOT NULL,
+                hit_count INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(project_path, fingerprint)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cache_rejects (
+                id INTEGER PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                project_path TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                reason TEXT NOT NULL
+            )",
+            [],
+        )?;
 
         Ok(Self { conn })
     }

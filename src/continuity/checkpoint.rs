@@ -5,7 +5,6 @@ use std::path::Path;
 
 use crate::safe_cache::workspace;
 
-/// A row read back from the checkpoints table.
 #[derive(Debug, Clone)]
 pub struct CheckpointEntry {
     pub id: i64,
@@ -24,7 +23,6 @@ pub struct CheckpointEntry {
     pub updated_at: String,
 }
 
-/// Data needed to insert a new checkpoint.
 #[derive(Debug, Clone)]
 pub struct NewCheckpoint {
     pub project_path: String,
@@ -48,12 +46,12 @@ impl CheckpointDb {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
-        let _ = conn.execute_batch(
+
+        conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA busy_timeout=5000;",
-        );
+        )?;
 
-        // Integrity check before any operations
         let integrity: String = conn
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .unwrap_or_else(|_| "failed".into());
@@ -61,7 +59,6 @@ impl CheckpointDb {
             anyhow::bail!("Database integrity check failed: {}", integrity);
         }
 
-        // Schema version tracking (shared across all tables in this DB)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)",
             [],
@@ -75,7 +72,7 @@ impl CheckpointDb {
             )
             .unwrap_or(0);
 
-        const EXPECTED_VERSION: i32 = 9;
+        const EXPECTED_VERSION: i32 = 11;
 
         if current_version > EXPECTED_VERSION {
             anyhow::bail!(
@@ -86,30 +83,25 @@ impl CheckpointDb {
             );
         }
 
-        // Note: versions 1-7 are ledger table versions, version 8 is safe_cache.
-        // Checkpoints table starts at version 9.
-        if current_version < 9 {
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS checkpoints (
-                    id INTEGER PRIMARY KEY,
-                    project_path TEXT NOT NULL,
-                    git_head TEXT NOT NULL DEFAULT '',
-                    workspace_fingerprint TEXT NOT NULL DEFAULT '',
-                    task TEXT NOT NULL DEFAULT '',
-                    completed TEXT NOT NULL DEFAULT '',
-                    changed_files TEXT NOT NULL DEFAULT '',
-                    verification TEXT NOT NULL DEFAULT '',
-                    open_risks TEXT NOT NULL DEFAULT '',
-                    next_action TEXT NOT NULL DEFAULT '',
-                    facts_json TEXT NOT NULL DEFAULT '{}',
-                    model_assisted INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )",
-                [],
-            )?;
-            conn.execute("INSERT INTO schema_version (version) VALUES (9)", [])?;
-        }
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS checkpoints (
+                id INTEGER PRIMARY KEY,
+                project_path TEXT NOT NULL,
+                git_head TEXT NOT NULL DEFAULT '',
+                workspace_fingerprint TEXT NOT NULL DEFAULT '',
+                task TEXT NOT NULL DEFAULT '',
+                completed TEXT NOT NULL DEFAULT '',
+                changed_files TEXT NOT NULL DEFAULT '',
+                verification TEXT NOT NULL DEFAULT '',
+                open_risks TEXT NOT NULL DEFAULT '',
+                next_action TEXT NOT NULL DEFAULT '',
+                facts_json TEXT NOT NULL DEFAULT '{}',
+                model_assisted INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
 
         Ok(Self { conn })
     }
@@ -251,7 +243,6 @@ mod tests {
         let db = test_db();
         let id = db.insert(&new_entry("task one")).unwrap();
         assert!(id > 0);
-
         let entry = db.get(id).unwrap().expect("should exist");
         assert_eq!(entry.task, "task one");
         assert!(!entry.created_at.is_empty());
@@ -262,7 +253,6 @@ mod tests {
         let db = test_db();
         db.insert(&new_entry("first")).unwrap();
         db.insert(&new_entry("second")).unwrap();
-
         let latest = db.latest("/test/project").unwrap().expect("should exist");
         assert_eq!(latest.task, "second");
     }
@@ -296,10 +286,7 @@ mod tests {
         let db = test_db();
         let id = db.insert(&new_entry("test")).unwrap();
         let entry = db.get(id).unwrap().expect("should exist");
-
-        // workspace fingerprint is always 64 hex chars
         assert_eq!(entry.workspace_fingerprint.len(), 64);
-        // git_head may be empty in CI, but field exists
         assert!(entry.created_at == entry.updated_at);
     }
 }
