@@ -1,6 +1,6 @@
 use toche::cache::breakpoint;
 use toche::cache::inject;
-use toche::profiles::types::CacheBreakpoint;
+use toche::config::toche_config::CacheBreakpoint;
 
 #[test]
 fn repeated_prefix_yields_cache_breakpoints() {

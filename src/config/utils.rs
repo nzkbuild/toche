@@ -19,6 +19,11 @@ pub fn atomic_write_secure(path: &Path, content: &str) -> anyhow::Result<()> {
         fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension("tmp");
+    // Clean up any stale temp file from a previous interrupted write before
+    // creating a new one, so the rename target is always the current content.
+    if tmp.exists() {
+        fs::remove_file(&tmp)?;
+    }
     fs::write(&tmp, content)?;
     restrict_permissions(&tmp)?;
     fs::rename(&tmp, path)?;

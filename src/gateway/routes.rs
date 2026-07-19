@@ -1,6 +1,7 @@
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use futures::stream::Stream;
@@ -8,27 +9,21 @@ use reqwest::Client;
 use tracing::{error, info};
 
 use crate::cache;
+use crate::config::loader::config_dir;
+use crate::config::toche_config::CacheMode;
 use crate::continuity;
 use crate::efficiency;
+use crate::gateway::server::AppState;
+use crate::identity::{self, IdentityContext, RequestId};
 use crate::meter::db::{LedgerDb, NewLedgerRecord};
 use crate::meter::pricing::PricingMap;
 use crate::meter::recorder::{RequestTimer, current_project_path, estimate_tokens, record_request};
-use crate::profiles::loader::{config_dir, load_profiles};
-use crate::profiles::types::CacheMode;
+use crate::protocol::{
+    Protocol, anthropic::AnthropicProtocol, openai_responses::OpenAiResponsesProtocol,
+};
 use crate::reduce;
 use crate::safe_cache;
 use crate::shield;
-
-/// Parse the "model" field from an Anthropic Messages API JSON body.
-fn extract_model(body: &str) -> String {
-    // Fast path: for the common case of a top-level "model" key, use
-    // serde_json Value for structural correctness (handles escapes, nested
-    // objects, and the key appearing inside string values correctly).
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| v.get("model")?.as_str().map(String::from))
-        .unwrap_or_else(|| "unknown".to_string())
-}
 
 /// Check whether a bypass header is set to "true" (case-insensitive).
 fn is_bypassed(headers: &HeaderMap, name: &str) -> bool {
@@ -61,6 +56,7 @@ async fn forward_to_upstream(
     upstream_url: &str,
     upstream_headers: HeaderMap,
     body: String,
+    protocol: &dyn Protocol,
 ) -> Result<ForwardedResponse, StatusCode> {
     let response = client
         .post(upstream_url)
@@ -74,20 +70,8 @@ async fn forward_to_upstream(
         })?;
 
     let status = response.status().as_u16();
-    let cache_read: u64 = response
-        .headers()
-        .get("anthropic-cache-read-input-tokens")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let cache_create: u64 = response
-        .headers()
-        .get("anthropic-cache-creation-input-tokens")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let resp_headers = protocol.parse_response_headers(response.headers());
 
-    // Collect full response body
     let collected = Arc::new(Mutex::new(Vec::new()));
     let collected_for_stream = collected.clone();
 
@@ -110,8 +94,8 @@ async fn forward_to_upstream(
     Ok(ForwardedResponse {
         status,
         body_bytes,
-        cache_read_tokens: cache_read,
-        cache_create_tokens: cache_create,
+        cache_read_tokens: resp_headers.cache_read_tokens,
+        cache_create_tokens: resp_headers.cache_create_tokens,
         coalesced_count: 0,
         reduction_input_tokens: 0,
         reduction_output_tokens: 0,
@@ -123,28 +107,109 @@ async fn forward_to_upstream(
 }
 
 pub async fn messages(
+    State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: String,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     let timer = RequestTimer::start();
+    let request_id = RequestId::new();
 
-    let profiles = load_profiles().map_err(|e| {
-        error!("Failed to load profiles: {e}");
+    let resolved = state.default_integration.clone().ok_or_else(|| {
+        error!("No default integration configured");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let profile = profiles.default_profile().ok_or_else(|| {
-        error!("No default profile configured");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let protocol = AnthropicProtocol;
 
-    let model = extract_model(&body);
-    let profile_name = profile.name.clone();
+    let model = protocol.extract_model(&body);
+    let integration_name = resolved.name.clone();
     let input_tokens = estimate_tokens(&body);
 
-    let upstream_url = format!("{}/v1/messages", profile.upstream_url.trim_end_matches('/'));
+    // Model validation: if integration has a whitelist, reject unknown models
+    if !resolved.models.is_empty() && !resolved.models.contains_key(&model) {
+        error!(
+            "Model '{}' not configured for integration '{}'. Allowed: {:?}",
+            model,
+            integration_name,
+            resolved.models.keys().collect::<Vec<_>>()
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let upstream_url = format!(
+        "{}{}",
+        resolved.upstream_url.trim_end_matches('/'),
+        protocol.path()
+    );
+
+    // Build identity context
+    let workspace_path = current_project_path();
+    let workspace_id = if workspace_path.is_empty() {
+        None
+    } else {
+        Some(identity::workspace_id_from_path(&workspace_path))
+    };
+
+    let secret_ref_display = resolved.auth.secret_ref.to_string();
+    let trust_domain_id = identity::derive_trust_domain_id(
+        &resolved.id,
+        &resolved.name,
+        &resolved.id, // upstream.id is not directly on resolved, use integration id as proxy
+        &secret_ref_display,
+    );
+
+    let policy_hash = identity::compute_policy_hash(
+        resolved.cache.as_ref().is_some_and(|c| c.enabled),
+        resolved.cache.as_ref().map_or("observe", |c| match c.mode {
+            crate::config::toche_config::CacheMode::Observe => "observe",
+            crate::config::toche_config::CacheMode::Auto => "auto",
+        }),
+        resolved
+            .cache
+            .as_ref()
+            .map_or("standard", |c| match c.breakpoint {
+                crate::config::toche_config::CacheBreakpoint::Standard => "standard",
+                crate::config::toche_config::CacheBreakpoint::SystemOnly => "system_only",
+            }),
+        resolved.reduce.is_some(),
+        resolved
+            .efficiency
+            .as_ref()
+            .map_or("normal", |e| match e.mode {
+                crate::efficiency::config::EfficiencyMode::Normal => "normal",
+                crate::efficiency::config::EfficiencyMode::Concise => "concise",
+                crate::efficiency::config::EfficiencyMode::Careful => "careful",
+            }),
+        resolved.safe_cache.as_ref().is_some_and(|s| s.enabled),
+    );
+
+    let external_request_id = identity::extract_external_request_id(&headers);
+    let conversation_id = identity::extract_conversation_id(&headers);
+
+    let id_ctx = IdentityContext {
+        runtime_id: state.runtime_id.clone(),
+        request_id: request_id.clone(),
+        external_request_id,
+        integration_id: resolved.id.clone(),
+        integration_name: resolved.name.clone(),
+        upstream_id: resolved.id.clone(),
+        upstream_name: resolved.name.clone(),
+        trust_domain_id: trust_domain_id.clone(),
+        instance_id: None,
+        conversation_id,
+        workspace_id,
+        policy_ids: vec![],
+        config_snapshot_hash: state.config_snapshot_hash.clone(),
+        attribution: identity::Attribution::Unknown,
+    };
+
+    info!(
+        "Request {}: integration={}, model={}",
+        request_id, integration_name, model
+    );
 
     let client = Client::builder()
+        .timeout(std::time::Duration::from_millis(state.request_timeout_ms))
         .build()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -157,7 +222,7 @@ pub async fn messages(
         upstream_headers.insert(name.clone(), value.clone());
     }
 
-    for (header_name, header_value) in &profile.headers {
+    for (header_name, header_value) in &resolved.upstream_headers {
         upstream_headers.insert(
             axum::http::HeaderName::from_bytes(header_name.as_bytes())
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
@@ -166,9 +231,16 @@ pub async fn messages(
         );
     }
 
-    // Step 1: Request Shield — coalesce identical in-flight requests on the
-    // raw body (before any reduction/cache modifications) for maximum
-    // coalescing.
+    // Add auth header if configured
+    if let Some(value) = &resolved.auth.value {
+        upstream_headers.insert(
+            axum::http::HeaderName::from_bytes(resolved.auth.header_name.as_bytes())
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            axum::http::HeaderValue::from_str(value)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        );
+    }
+
     let bypass_all = is_bypassed(&headers, "x-toche-bypass");
     let bypass_shield = bypass_all || is_bypassed(&headers, "x-toche-bypass-shield");
     let bypass_safe_cache = bypass_all || is_bypassed(&headers, "x-toche-bypass-safe-cache");
@@ -176,23 +248,30 @@ pub async fn messages(
     let bypass_efficiency = bypass_all || is_bypassed(&headers, "x-toche-bypass-efficiency");
     let bypass_cache = bypass_all || is_bypassed(&headers, "x-toche-bypass-cache");
 
-    let fingerprint = shield::fingerprint::compute(&body);
+    let is_streaming = protocol.is_streaming(&body);
 
-    let shield_result = if bypass_shield {
+    let fingerprint = protocol.fingerprint(&body);
+    let shield_result = if bypass_shield || is_streaming {
         shield::coalesce::CoalesceResult::Forward { key: String::new() }
     } else {
         shield::coalesce::store()
-            .try_acquire(&upstream_url, &fingerprint)
+            .try_acquire(
+                &upstream_url,
+                &fingerprint,
+                id_ctx.trust_domain_id.as_str(),
+                &policy_hash,
+            )
             .await
     };
 
     let (forwarded, shield_key_for_complete) = match shield_result {
         shield::coalesce::CoalesceResult::Coalesced { captured } => {
             info!(
-                "Shield coalesced: fingerprint={}.., profile={}, model={}",
+                "Shield coalesced: fingerprint={}.., integration={}, model={}, domain={}",
                 &fingerprint[..16.min(fingerprint.len())],
-                profile_name,
-                model
+                integration_name,
+                model,
+                id_ctx.trust_domain_id.as_str()
             );
             (
                 ForwardedResponse {
@@ -219,7 +298,7 @@ pub async fn messages(
             info!("Forwarding to upstream: {upstream_url}");
 
             // Step 1.5: Persistent safe cache check (after shield, before reduce).
-            let safe_cache_cfg = profile.safe_cache.as_ref();
+            let safe_cache_cfg = resolved.safe_cache.as_ref();
 
             let mut cache_hit: Option<ForwardedResponse> = None;
 
@@ -279,7 +358,6 @@ pub async fn messages(
             }
 
             if let Some(cached) = cache_hit {
-                // Complete shield slot so waiters get the cached response
                 shield::coalesce::store().complete(
                     &key,
                     shield::coalesce::CapturedResponse {
@@ -289,10 +367,8 @@ pub async fn messages(
                 );
                 (cached, None)
             } else {
-                // Step 2: Reduce tool output in the request body (after shield,
-                // before cache injection — deterministic reduction is cache-friendly).
                 let default_reduce = reduce::config::ReduceConfig::default();
-                let reduce_cfg = profile.reduce.as_ref().unwrap_or(&default_reduce);
+                let reduce_cfg = resolved.reduce.as_ref().unwrap_or(&default_reduce);
 
                 let reduction = reduce::transform::reduce_body(&body, reduce_cfg, bypass_reduce)
                     .unwrap_or_else(|e| {
@@ -309,9 +385,8 @@ pub async fn messages(
 
                 let reduced_body = reduction.modified_body;
 
-                // Step 2.5: Efficiency profile injection (after reduce, before cache).
                 let default_efficiency = efficiency::config::EfficiencyConfig::default();
-                let efficiency_cfg = profile.efficiency.as_ref().unwrap_or(&default_efficiency);
+                let efficiency_cfg = resolved.efficiency.as_ref().unwrap_or(&default_efficiency);
 
                 let instruction = if bypass_efficiency {
                     None
@@ -339,13 +414,12 @@ pub async fn messages(
 
                 if !efficiency_mode_name.is_empty() {
                     info!(
-                        "Efficiency: {} mode active, {} tokens injected, profile={}, model={}",
-                        efficiency_mode_name, efficiency_tokens_added, profile_name, model
+                        "Efficiency: {} mode active, {} tokens injected, integration={}, model={}",
+                        efficiency_mode_name, efficiency_tokens_added, integration_name, model
                     );
                 }
 
-                // Step 3: Cache breakpoint injection on the efficiency-modified body.
-                let final_body = if let Some(ref cache_cfg) = profile.cache {
+                let final_body = if let Some(ref cache_cfg) = resolved.cache {
                     if cache_cfg.enabled && !bypass_cache {
                         let plan_result = cache::breakpoint::find_breakpoints(
                             &body_after_efficiency,
@@ -362,7 +436,7 @@ pub async fn messages(
                             CacheMode::Observe => {
                                 if bp.has_breakpoints() {
                                     info!(
-                                        "Cache observe: {} breakpoints found (system={}, messages={}), profile={}, model={}",
+                                        "Cache observe: {} breakpoints found (system={}, messages={}), integration={}, model={}",
                                         bp.message_blocks.len()
                                             + if bp.system_block_index.is_some() {
                                                 1
@@ -371,7 +445,7 @@ pub async fn messages(
                                             },
                                         bp.system_block_index.is_some(),
                                         bp.message_blocks.len(),
-                                        profile_name,
+                                        integration_name,
                                         model
                                     );
                                 }
@@ -385,10 +459,11 @@ pub async fn messages(
                                         0
                                     };
                                 info!(
-                                    "Cache auto: {} breakpoints injected, profile={}, model={}",
-                                    count, profile_name, model
+                                    "Cache auto: {} breakpoints injected, integration={}, model={}",
+                                    count, integration_name, model
                                 );
-                                cache::inject::inject_cache_control(&body_after_efficiency, &bp)
+                                protocol
+                                    .inject_cache_control(&body_after_efficiency, &bp)
                                     .unwrap_or_else(|e| {
                                         error!("Cache injection failed: {e}, forwarding body");
                                         body_after_efficiency
@@ -402,9 +477,14 @@ pub async fn messages(
                     body_after_efficiency
                 };
 
-                let mut fwd =
-                    forward_to_upstream(&client, &upstream_url, upstream_headers, final_body)
-                        .await?;
+                let mut fwd = forward_to_upstream(
+                    &client,
+                    &upstream_url,
+                    upstream_headers,
+                    final_body,
+                    &protocol,
+                )
+                .await?;
                 fwd.reduction_input_tokens = reduction.tokens_raw;
                 fwd.reduction_output_tokens = reduction.tokens_reduced;
                 fwd.reduction_count = reduction.reductions as u64;
@@ -479,7 +559,7 @@ pub async fn messages(
 
     // Record to ledger (fire-and-forget)
     let model_clone = model;
-    let profile_clone = profile_name;
+    let integration_name_clone = integration_name;
     let status_clone = status_str.to_string();
     let project_path = current_project_path();
     let cache_read = forwarded.cache_read_tokens;
@@ -490,6 +570,7 @@ pub async fn messages(
     let reduction_count = forwarded.reduction_count;
     let efficiency_mode = forwarded.efficiency_mode;
     let _efficiency_tokens_added = forwarded.efficiency_tokens_added;
+    let id_ctx_for_ledger = id_ctx.clone();
     tokio::spawn(async move {
         let db_path = config_dir().join("ledger.db");
         let db = match LedgerDb::open(&db_path) {
@@ -516,7 +597,7 @@ pub async fn messages(
         let record = NewLedgerRecord {
             timestamp: chrono::Utc::now(),
             model: model_clone,
-            profile_name: profile_clone,
+            profile_name: integration_name_clone,
             input_tokens,
             output_tokens,
             cache_read_input_tokens: cache_read,
@@ -531,6 +612,14 @@ pub async fn messages(
             reduction_count,
             efficiency_mode,
             local_cache_hit: forwarded.local_cache_hit,
+            runtime_id: id_ctx_for_ledger.runtime_id.as_str().to_string(),
+            request_id: id_ctx_for_ledger.request_id.as_str().to_string(),
+            integration_id: id_ctx_for_ledger.integration_id,
+            upstream_id: id_ctx_for_ledger.upstream_id,
+            trust_domain_id: id_ctx_for_ledger.trust_domain_id.as_str().to_string(),
+            config_snapshot_hash: id_ctx_for_ledger.config_snapshot_hash,
+            attribution: id_ctx_for_ledger.attribution.to_string(),
+            protocol: "anthropic".to_string(),
         };
         if let Err(e) = record_request(&db, &pricing, record) {
             error!("Failed to record to ledger: {e}");
@@ -540,50 +629,180 @@ pub async fn messages(
     Ok(Sse::new(stream))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub async fn responses(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    let timer = RequestTimer::start();
+    let request_id = RequestId::new();
 
-    #[test]
-    fn test_extract_model_present() {
-        let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[]}"#;
-        assert_eq!(extract_model(body), "claude-sonnet-5");
+    let resolved = state.default_integration.clone().ok_or_else(|| {
+        error!("No default integration configured");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let protocol = OpenAiResponsesProtocol;
+
+    let model = protocol.extract_model(&body);
+    let integration_name = resolved.name.clone();
+    let input_tokens = estimate_tokens(&body);
+
+    let upstream_url = format!(
+        "{}{}",
+        resolved.upstream_url.trim_end_matches('/'),
+        protocol.path()
+    );
+
+    let workspace_path = current_project_path();
+    let workspace_id = if workspace_path.is_empty() {
+        None
+    } else {
+        Some(identity::workspace_id_from_path(&workspace_path))
+    };
+
+    let secret_ref_display = resolved.auth.secret_ref.to_string();
+    let trust_domain_id = identity::derive_trust_domain_id(
+        &resolved.id,
+        &resolved.name,
+        &resolved.id,
+        &secret_ref_display,
+    );
+
+    let external_request_id = identity::extract_external_request_id(&headers);
+    let conversation_id = identity::extract_conversation_id(&headers);
+
+    let id_ctx = IdentityContext {
+        runtime_id: state.runtime_id.clone(),
+        request_id: request_id.clone(),
+        external_request_id,
+        integration_id: resolved.id.clone(),
+        integration_name: resolved.name.clone(),
+        upstream_id: resolved.id.clone(),
+        upstream_name: resolved.name.clone(),
+        trust_domain_id: trust_domain_id.clone(),
+        instance_id: None,
+        conversation_id,
+        workspace_id,
+        policy_ids: vec![],
+        config_snapshot_hash: state.config_snapshot_hash.clone(),
+        attribution: identity::Attribution::Unknown,
+    };
+
+    info!(
+        "Request {} (responses): integration={}, model={}",
+        request_id, integration_name, model
+    );
+
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_millis(state.request_timeout_ms))
+        .build()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut upstream_headers = HeaderMap::new();
+    for (name, value) in &headers {
+        let name_str = name.as_str().to_lowercase();
+        if matches!(name_str.as_str(), "host" | "content-length") {
+            continue;
+        }
+        upstream_headers.insert(name.clone(), value.clone());
     }
 
-    #[test]
-    fn test_extract_model_with_slash() {
-        let body = r#"{"model":"cx/gpt-5.6-sol","messages":[]}"#;
-        assert_eq!(extract_model(body), "cx/gpt-5.6-sol");
+    for (header_name, header_value) in &resolved.upstream_headers {
+        upstream_headers.insert(
+            axum::http::HeaderName::from_bytes(header_name.as_bytes())
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            axum::http::HeaderValue::from_str(header_value)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        );
     }
 
-    #[test]
-    fn test_extract_model_missing() {
-        let body = r#"{"max_tokens":1024}"#;
-        assert_eq!(extract_model(body), "unknown");
+    if let Some(value) = &resolved.auth.value {
+        upstream_headers.insert(
+            axum::http::HeaderName::from_bytes(resolved.auth.header_name.as_bytes())
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            axum::http::HeaderValue::from_str(value)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        );
     }
 
-    #[test]
-    fn test_extract_model_empty_body() {
-        assert_eq!(extract_model(""), "unknown");
-    }
+    let _is_streaming = protocol.is_streaming(&body);
 
-    #[test]
-    fn test_extract_model_date_suffix_preserved() {
-        let body = r#"{"model":"claude-sonnet-5-20251001","messages":[]}"#;
-        assert_eq!(extract_model(body), "claude-sonnet-5-20251001");
-    }
+    info!("Forwarding (responses) to upstream: {upstream_url}");
 
-    #[test]
-    fn test_extract_model_key_in_string_value_not_matched() {
-        // The word "model" appearing inside a message string must not be
-        // mistaken for the top-level "model" key.
-        let body = r#"{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":"which model to use"}]}"#;
-        assert_eq!(extract_model(body), "claude-sonnet-5");
-    }
+    let fwd = forward_to_upstream(
+        &client,
+        &upstream_url,
+        upstream_headers,
+        body.clone(),
+        &protocol,
+    )
+    .await?;
 
-    #[test]
-    fn test_extract_model_with_escaped_quotes() {
-        let body = r#"{"model":"claude-sonnet-5","messages":[{"role":"user","content":"he said: \"which model?\""}]}"#;
-        assert_eq!(extract_model(body), "claude-sonnet-5");
-    }
+    let status_str = if fwd.status >= 200 && fwd.status < 300 {
+        "success"
+    } else {
+        "error"
+    };
+    let latency_ms = timer.elapsed_ms();
+
+    let body_bytes = fwd.body_bytes;
+    let stream = futures::stream::once({
+        let data = String::from_utf8_lossy(&body_bytes).to_string();
+        async move { Ok(Event::default().data(data)) }
+    });
+
+    continuity::observer::observe_response(&body_bytes);
+
+    let model_clone = model;
+    let integration_name_clone = integration_name;
+    let status_clone = status_str.to_string();
+    let project_path = current_project_path();
+    let id_ctx_for_ledger = id_ctx.clone();
+
+    tokio::spawn(async move {
+        let db_path = config_dir().join("ledger.db");
+        let db = match LedgerDb::open(&db_path) {
+            Ok(db) => db,
+            Err(e) => {
+                error!("Failed to open ledger DB: {e}");
+                return;
+            }
+        };
+        let pricing = PricingMap::load_embedded();
+        let output_tokens = estimate_tokens(&String::from_utf8_lossy(&body_bytes));
+
+        let record = NewLedgerRecord {
+            timestamp: chrono::Utc::now(),
+            model: model_clone,
+            profile_name: integration_name_clone,
+            input_tokens,
+            output_tokens,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            coalesced_count: 0,
+            latency_ms,
+            status: status_clone,
+            cost: None,
+            project_path,
+            reduction_input_tokens: 0,
+            reduction_output_tokens: 0,
+            reduction_count: 0,
+            efficiency_mode: String::new(),
+            local_cache_hit: false,
+            runtime_id: id_ctx_for_ledger.runtime_id.as_str().to_string(),
+            request_id: id_ctx_for_ledger.request_id.as_str().to_string(),
+            integration_id: id_ctx_for_ledger.integration_id,
+            upstream_id: id_ctx_for_ledger.upstream_id,
+            trust_domain_id: id_ctx_for_ledger.trust_domain_id.as_str().to_string(),
+            config_snapshot_hash: id_ctx_for_ledger.config_snapshot_hash,
+            attribution: id_ctx_for_ledger.attribution.to_string(),
+            protocol: "openai-responses".to_string(),
+        };
+        if let Err(e) = record_request(&db, &pricing, record) {
+            error!("Failed to record to ledger: {e}");
+        }
+    });
+
+    Ok(Sse::new(stream))
 }

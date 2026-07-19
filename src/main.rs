@@ -7,17 +7,21 @@ mod continuity;
 mod efficiency;
 mod gateway;
 mod graphify;
+mod identity;
+mod integrations;
 mod meter;
 mod profiles;
+mod protocol;
 mod reduce;
 mod safe_cache;
+mod setup;
 mod shield;
 
 #[derive(Parser)]
 #[command(
     name = "toche",
     version,
-    about = "Local context-efficiency gateway for Claude Code"
+    about = "Local context-efficiency gateway for Claude Code and Codex"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -26,20 +30,44 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Import existing Claude Code gateway configuration
+    /// Configure Toche integrations and upstreams
     Setup {
-        /// Force overwrite of existing profiles.toml
+        /// Force overwrite of existing config.toml (backup is created)
         #[arg(long)]
         force: bool,
+        /// Preview changes without writing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Output machine-readable JSON (use with --dry-run)
+        #[arg(long)]
+        json: bool,
     },
-    /// Point Claude Code to Toche
-    Connect { agent: Option<String> },
-    /// Restore Claude Code to direct upstream
-    Disconnect { agent: Option<String> },
+    /// Route a client through Toche (persistent mode)
+    Connect {
+        /// Client to connect (default: claude, supported: claude, codex)
+        agent: Option<String>,
+    },
+    /// Remove Toche routing from a client
+    Disconnect {
+        /// Client to disconnect (default: claude, supported: claude, codex)
+        agent: Option<String>,
+    },
+    /// Run a client in managed mode through Toche
+    Run {
+        /// Client to run (supported: claude, codex)
+        client: String,
+        /// Arguments to forward to the client
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Verify Toche installation and configuration
     Doctor,
     /// Show gateway status
-    Status,
+    Status {
+        /// Output in machine-readable JSON format
+        #[arg(long)]
+        json: bool,
+    },
     /// Show usage statistics and cost breakdown
     Stats {
         /// Output in machine-readable JSON format
@@ -48,6 +76,15 @@ enum Commands {
         /// Show recent entries (last N, default 50)
         #[arg(long, default_value = "50")]
         entries: u32,
+        /// Filter by protocol (anthropic, openai-responses)
+        #[arg(long)]
+        protocol: Option<String>,
+        /// Filter by integration name
+        #[arg(long)]
+        integration: Option<String>,
+        /// Filter by trust domain hash
+        #[arg(long)]
+        trust_domain: Option<String>,
     },
     /// Restore original tool output from a reduction hash
     Expand {
@@ -172,12 +209,32 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Setup { force }) => cli::setup::run(force).await,
+        Some(Commands::Setup {
+            force,
+            dry_run,
+            json,
+        }) => cli::setup::run(force, dry_run, json).await,
         Some(Commands::Connect { agent }) => cli::connect::run(agent.as_deref()).await,
         Some(Commands::Disconnect { agent }) => cli::disconnect::run(agent.as_deref()).await,
+        Some(Commands::Run { client, args }) => cli::run::run(&client, args).await,
         Some(Commands::Doctor) => cli::doctor::run().await,
-        Some(Commands::Status) => cli::status::run().await,
-        Some(Commands::Stats { json, entries }) => cli::stats::run(json, entries).await,
+        Some(Commands::Status { json }) => cli::status::run(json).await,
+        Some(Commands::Stats {
+            json,
+            entries,
+            protocol,
+            integration,
+            trust_domain,
+        }) => {
+            cli::stats::run(
+                json,
+                entries,
+                protocol.as_deref(),
+                integration.as_deref(),
+                trust_domain.as_deref(),
+            )
+            .await
+        }
         Some(Commands::Expand { hash, json }) => cli::expand::run(hash, json).await,
         Some(Commands::Cache { action }) => match action {
             CacheAction::Inspect { json, entries } => cli::cache::run_inspect(json, entries).await,

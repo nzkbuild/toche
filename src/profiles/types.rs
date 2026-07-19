@@ -101,12 +101,4 @@ pub struct Profiles {
     pub profiles: Vec<Profile>,
 }
 
-impl Profiles {
-    pub fn default_profile(&self) -> Option<&Profile> {
-        if let Some(ref name) = self.default {
-            self.profiles.iter().find(|p| &p.name == name)
-        } else {
-            self.profiles.first()
-        }
-    }
-}
+impl Profiles {}

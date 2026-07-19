@@ -1,10 +1,33 @@
 use anyhow::Context;
 
 use crate::meter::db::LedgerDb;
-use crate::meter::types::StatsOutput;
+use crate::meter::types::{MeasurementConfidence, StatsOutput, StatsOutputV1};
 use crate::profiles::loader::config_dir;
 
-pub async fn run(json: bool, entries: u32) -> anyhow::Result<()> {
+/// Schema version embedded in all JSON output.
+pub const STATS_JSON_SCHEMA_VERSION: &str = "1.0.0";
+
+fn classify_confidence(entry: &crate::meter::types::LedgerEntry) -> MeasurementConfidence {
+    if entry.input_tokens > 0 || entry.output_tokens > 0 {
+        if entry.model != "unknown" && entry.cost.is_some() {
+            MeasurementConfidence::Measured
+        } else {
+            MeasurementConfidence::ProviderReported
+        }
+    } else if entry.cost.is_some() {
+        MeasurementConfidence::Configured
+    } else {
+        MeasurementConfidence::Unknown
+    }
+}
+
+pub async fn run(
+    json: bool,
+    entries: u32,
+    protocol_filter: Option<&str>,
+    integration_filter: Option<&str>,
+    trust_domain_filter: Option<&str>,
+) -> anyhow::Result<()> {
     let db_path = config_dir().join("ledger.db");
     let db = LedgerDb::open(&db_path)
         .with_context(|| format!("Failed to open ledger at {}", db_path.display()))?;
@@ -16,14 +39,115 @@ pub async fn run(json: bool, entries: u32) -> anyhow::Result<()> {
         .get_entries(entries, None)
         .context("Failed to query ledger entries")?;
 
+    // Filter entries by protocol, integration, trust domain
+    let filtered: Vec<_> = recent
+        .into_iter()
+        .filter(|e| {
+            if let Some(p) = protocol_filter {
+                if e.protocol != p {
+                    return false;
+                }
+            }
+            if let Some(i) = integration_filter {
+                if e.profile_name != i {
+                    return false;
+                }
+            }
+            if let Some(td) = trust_domain_filter {
+                if e.trust_domain_id != td {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    // Aggregate by protocol
+    let mut by_protocol: Vec<crate::meter::types::ProtocolBreakdown> = Vec::new();
+    {
+        let mut groups: std::collections::HashMap<String, crate::meter::types::UsageBreakdown> =
+            std::collections::HashMap::new();
+        for e in &filtered {
+            let b = groups.entry(e.protocol.clone()).or_default();
+            b.total_requests += 1;
+            b.input_tokens += e.input_tokens;
+            b.output_tokens += e.output_tokens;
+            b.cache_read_input_tokens += e.cache_read_input_tokens;
+            b.cache_creation_input_tokens += e.cache_creation_input_tokens;
+            b.coalesced_count += e.coalesced_count;
+            b.upstream_requests += if e.local_cache_hit { 0 } else { 1 };
+            if e.cost.is_some() {
+                b.total_cost_known += e.cost.unwrap_or(0.0);
+            } else {
+                b.total_cost_unknown_requests += 1;
+            }
+            b.reduction_input_tokens += e.reduction_input_tokens;
+            b.reduction_output_tokens += e.reduction_output_tokens;
+            b.reduction_count += e.reduction_count;
+            if e.local_cache_hit {
+                b.local_cache_hit_count += 1;
+                b.local_hit_tokens_saved += e.input_tokens + e.output_tokens;
+            }
+        }
+        for (proto, breakdown) in groups.into_iter() {
+            by_protocol.push(crate::meter::types::ProtocolBreakdown {
+                protocol: proto,
+                breakdown,
+            });
+        }
+    }
+
+    // Aggregate by integration
+    let mut by_integration: Vec<crate::meter::types::IntegrationBreakdown> = Vec::new();
+    {
+        let mut groups: std::collections::HashMap<String, crate::meter::types::UsageBreakdown> =
+            std::collections::HashMap::new();
+        for e in &filtered {
+            let b = groups.entry(e.profile_name.clone()).or_default();
+            b.total_requests += 1;
+            b.input_tokens += e.input_tokens;
+            b.output_tokens += e.output_tokens;
+            b.cache_read_input_tokens += e.cache_read_input_tokens;
+            b.cache_creation_input_tokens += e.cache_creation_input_tokens;
+            b.coalesced_count += e.coalesced_count;
+            b.upstream_requests += if e.local_cache_hit { 0 } else { 1 };
+            if e.cost.is_some() {
+                b.total_cost_known += e.cost.unwrap_or(0.0);
+            } else {
+                b.total_cost_unknown_requests += 1;
+            }
+            b.reduction_input_tokens += e.reduction_input_tokens;
+            b.reduction_output_tokens += e.reduction_output_tokens;
+            b.reduction_count += e.reduction_count;
+            if e.local_cache_hit {
+                b.local_cache_hit_count += 1;
+                b.local_hit_tokens_saved += e.input_tokens + e.output_tokens;
+            }
+        }
+        for (integration, breakdown) in groups.into_iter() {
+            by_integration.push(crate::meter::types::IntegrationBreakdown {
+                integration,
+                breakdown,
+            });
+        }
+    }
+
     let output = StatsOutput {
         summary,
-        entries: recent,
+        entries: filtered.clone(),
     };
 
     if json {
+        let v1 = StatsOutputV1 {
+            schema_version: STATS_JSON_SCHEMA_VERSION.to_string(),
+            summary: output.summary,
+            entries: filtered.clone(),
+            by_protocol,
+            by_integration,
+        };
+
         let json_str =
-            serde_json::to_string_pretty(&output).context("Failed to serialize stats to JSON")?;
+            serde_json::to_string_pretty(&v1).context("Failed to serialize stats to JSON")?;
         println!("{json_str}");
     } else {
         println!("Toche Usage Stats");
@@ -82,6 +206,36 @@ pub async fn run(json: bool, entries: u32) -> anyhow::Result<()> {
         }
         println!();
 
+        if !by_protocol.is_empty() {
+            println!("By Protocol:");
+            for p in &by_protocol {
+                println!(
+                    "  {:25} {:>6} reqs  {:>10} in  {:>10} out  ${:.6}",
+                    p.protocol,
+                    p.breakdown.total_requests,
+                    p.breakdown.input_tokens,
+                    p.breakdown.output_tokens,
+                    p.breakdown.total_cost_known
+                );
+            }
+            println!();
+        }
+
+        if !by_integration.is_empty() {
+            println!("By Integration:");
+            for i in &by_integration {
+                println!(
+                    "  {:25} {:>6} reqs  {:>10} in  {:>10} out  ${:.6}",
+                    i.integration,
+                    i.breakdown.total_requests,
+                    i.breakdown.input_tokens,
+                    i.breakdown.output_tokens,
+                    i.breakdown.total_cost_known
+                );
+            }
+            println!();
+        }
+
         if !output.summary.by_model.is_empty() {
             println!("By Model:");
             for m in &output.summary.by_model {
@@ -104,17 +258,23 @@ pub async fn run(json: bool, entries: u32) -> anyhow::Result<()> {
                     .cost
                     .map(|c| format!("${c:.6}"))
                     .unwrap_or_else(|| "unknown".to_string());
-                let cache_mark = if e.local_cache_hit { " [CACHE]" } else { "" };
+                let proto = if e.protocol.is_empty() {
+                    "?"
+                } else {
+                    &e.protocol
+                };
+                let conf = classify_confidence(e);
                 println!(
-                    "  {}  {:30}  {:>6} in {:>6} out  {:>4}ms  {}  {}{}",
+                    "  {}  {:12}  {:25}  {:>6} in {:>6} out  {:>4}ms  {}  {}  {}",
                     e.timestamp.format("%Y-%m-%d %H:%M:%S"),
+                    proto,
                     e.model,
                     e.input_tokens,
                     e.output_tokens,
                     e.latency_ms,
                     e.status,
                     cost_str,
-                    cache_mark,
+                    conf,
                 );
             }
         }

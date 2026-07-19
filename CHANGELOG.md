@@ -1,6 +1,85 @@
 # Changelog
 
-All notable changes to Toche will be documented in this file.
+All notable changes to Toche are documented in this file.
+
+## [1.1.0] — 2026-07-20
+
+### Added
+
+- **Multi-client runtime.** The Toche gateway now accepts connections from
+  multiple simultaneous AI clients. Claude Code and Codex CLI can run
+  concurrently through the same local Toche instance.
+- **Codex CLI integration.** `toche setup` detects Codex installations and
+  configures an OpenAI Responses upstream. Both persistent mode (`toche` +
+  `codex`) and managed mode (`toche run codex`) are supported.
+- **OpenAI Responses protocol support.** A protocol driver for the OpenAI
+  Responses API (`/v1/responses`) with correct pass-through forwarding,
+  streaming, trust isolation, measurement, and unknown-field preservation.
+- **Protocol-driver architecture.** Protocol-specific logic lives behind a
+  `Protocol` trait (`src/protocol/`). Raw request bytes remain authoritative
+  and unknown fields survive unchanged. The Anthropic pipeline is
+  behaviourally equivalent to 1.0.x.
+- **Runtime identity and trust domains.** Every runtime instance, request,
+  and client carries independently identifiable UUIDv7 metadata. Trust domains
+  are derived from integration, upstream, and credential-reference identity
+  without exposing raw secrets.
+- **Configuration schema v2.** The overloaded `Profile` concept is replaced
+  with separate `RuntimeConfig`, `Integration`, `Upstream`, `Policy`, and
+  `StorageConfig` types. Deterministic ID derivation ensures stable references.
+- **Rerunnable setup engine.** `toche setup` detects, resolves, previews,
+  applies, and verifies configuration transactionally. It modifies only
+  Toche-owned fragments, preserves unrelated settings, and is safe to interrupt.
+- **Safe flight registry.** Coalescing keys now include protocol version,
+  upstream ID, trust-domain ID, and policy hash — not just URL and body
+  fingerprint. RAII leader cleanup, deterministic waiter wake-up, and
+  cancellation isolation prevent cross-client corruption.
+- **`toche status` command.** Reports live runtime endpoint, active
+  integrations, active flights, coalesced waiters, protocol counts, and
+  degraded optional systems.
+- **`toche stats` filtering.** Stats accept `--protocol`, `--integration`,
+  and `--trust-domain` filters.
+- **Measurement confidence.** Every value in stats output is classified as
+  `measured`, `provider-reported`, `estimated`, `configured`, or `unknown`.
+- **Managed mode (`toche run`).** Launch a client through Toche in one step
+  using the same runtime, configuration, and optimization pipeline as
+  persistent mode.
+- **Migration from 1.0.x.** `profiles.toml` is migrated to `config.toml`
+  automatically, with backup, idempotency, and safe failure on malformed input.
+
+### Changed
+
+- **Configuration format.** `~/.toche/profiles.toml` is superseded by
+  `~/.toche/config.toml` (schema v2). The legacy file is backed up on migration
+  and the migration is one-way but safe.
+- **`toche connect` and `toche disconnect`** accept a client argument
+  (`claude` or `codex`) instead of only operating on Claude Code.
+- **Coalescing is disabled for streaming requests** in 1.1.0 pending
+  bounded live fan-out with full acceptance testing.
+- **Request identity** now flows through the entire pipeline rather than
+  being derived ad-hoc at the ledger boundary.
+- **Secret references** use an explicit `SecretRef` enum (`environment`,
+  `command`, `legacy_inline`, `none`) instead of raw plaintext values in
+  configuration.
+
+### Fixed
+
+- Different credential references no longer share cache entries or in-flight
+  coalescing (previously keyed only by URL and body fingerprint).
+- Leader panic in the flight registry no longer leaves a stale flight entry
+  that blocks subsequent identical requests.
+- Waiter cancellation no longer corrupts the leader's upstream request.
+- Secret values are never placed in logs, IDs, hashes, database diagnostics,
+  or receipts.
+
+### Summary
+
+This release transforms Toche from a Claude Code-specific local gateway into a
+safe multi-client AI workload runtime. One local Toche instance can now serve
+Claude Code and Codex CLI simultaneously, with trust-domain isolation preventing
+cross-client cache or flight sharing. The configuration schema, protocol-driver
+architecture, and rerunnable setup engine establish the foundation for future
+client and protocol support. All exiting 1.0.x configurations migrate
+automatically and the persistent two-terminal workflow remains first-class.
 
 ## [1.0.10] - 2026-07-17
 
@@ -46,6 +125,7 @@ All notable changes to Toche will be documented in this file.
 - Draft-first release workflow for Windows, Linux, Intel macOS, and Apple Silicon macOS archives with SHA-256 checksums
 - Repository-owned status badge artwork and first public release notes
 - Toche-owned Cargo and Git diff filters, bringing the committed built-in inventory to 65
+
 ## [1.0.6] - 2026-07-17
 
 ### Added

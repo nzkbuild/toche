@@ -1,0 +1,411 @@
+schema_version = 1
+
+[[sources]]
+id = "rtk-filters"
+project = "rtk-ai/rtk"
+repository = "https://github.com/rtk-ai/rtk"
+revision = "5d32d0736f686b69d1e8b9dc45c007d4eb77a0a2"
+revision_type = "commit"
+license = "Apache-2.0"
+license_file = "https://github.com/rtk-ai/rtk/blob/5d32d0736f686b69d1e8b9dc45c007d4eb77a0a2/LICENSE"
+action = "vendor"
+status = "approved"
+purpose = "TOML tool-output filter definitions for reduction pipeline"
+source_files = ["src/filters/*.toml"]
+planned_toche_files = ["assets/filters/rtk/*.toml"]
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "build.rs combines rtk/ and toche/ filters; duplicate-name check; count 63 upstream + 2 Toche-owned"
+notes = "Existing THIRD_PARTY_NOTICES.md used short SHA 5d32d07; full SHA is authoritative."
+
+[[sources]]
+id = "ccusage"
+project = "ccusage/ccusage"
+repository = "https://github.com/ccusage/ccusage"
+revision = "7acee6c5853c26fe66fbe1453bd94c9376afec06"
+revision_type = "commit"
+license = "MIT"
+license_file = "https://github.com/ccusage/ccusage/blob/7acee6c5853c26fe66fbe1453bd94c9376afec06/apps/ccusage/LICENSE"
+action = "reference"
+status = "approved"
+purpose = "Usage ledger grouping and reporting concepts"
+source_files = ["rust/crates/ccusage/src/adapter/all/report.rs", "rust/crates/ccusage/src/adapter/all/types.rs"]
+planned_toche_files = []
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "No code copied; design concepts documented in REUSE_LOCK.md"
+notes = "Toche implements its own SQLite ledger."
+
+[[sources]]
+id = "graphify"
+project = "Graphify-Labs/graphify"
+repository = "https://github.com/Graphify-Labs/graphify"
+revision = "43b2aff"
+revision_type = "commit"
+license = "MIT"
+license_file = ""
+action = "reference"
+status = "approved"
+purpose = "External CLI/MCP adapter reference"
+source_files = []
+planned_toche_files = []
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "No code copied; Toche calls Graphify CLI as optional integration"
+notes = "Existing notice; no new use in 1.1.0."
+
+[[sources]]
+id = "andrej-karpathy-skills"
+project = "multica-ai/andrej-karpathy-skills"
+repository = "https://github.com/multica-ai/andrej-karpathy-skills"
+revision = "2c60614"
+revision_type = "commit"
+license = "MIT"
+license_file = ""
+action = "reference"
+status = "approved"
+purpose = "Policy rules reference"
+source_files = []
+planned_toche_files = []
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "No code copied; policy concepts inform efficiency profiles"
+notes = "Existing notice; no new use in 1.1.0."
+
+[[sources]]
+id = "caveman-claude"
+project = "caveman-claude"
+repository = "https://github.com/juliusbrussee/caveman"
+revision = "0d95a81"
+revision_type = "commit"
+license = "MIT"
+license_file = ""
+action = "reference"
+status = "approved"
+purpose = "Concision patterns reference"
+source_files = []
+planned_toche_files = []
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "No code copied; concision concepts inform response profiles"
+notes = "Existing notice; no new use in 1.1.0."
+
+[[sources]]
+id = "cc-switch"
+project = "farion1231/cc-switch"
+repository = "https://github.com/farion1231/cc-switch"
+revision = "edea624a27d6a94678e0a5c2ddaa674876d9d186"
+revision_type = "commit"
+license = "MIT"
+license_file = "https://github.com/farion1231/cc-switch/blob/edea624a27d6a94678e0a5c2ddaa674876d9d186/LICENSE"
+action = "adapt"
+status = "approved"
+purpose = "Client config path discovery, structured subset matching/merge/removal, preservation of unrelated configuration"
+source_files = [
+    "src/lib/api/settings.ts",
+    "src/utils/providerConfigUtils.ts",
+    "src/hooks/useSettings.ts",
+    "src/components/providers/forms/hooks/useCodexCommonConfig.ts",
+    "src/components/providers/forms/CodexConfigSections.tsx",
+]
+planned_toche_files = ["src/setup/detect.rs", "src/setup/apply.rs", "src/setup/preview.rs"]
+production_dependency = false
+modified = true
+attribution_required = true
+verification = "Round-trip merge/remove tests on Claude Code and Codex settings.json; preservation of unknown fields and comments"
+notes = "SaladDay/cc-switch-cli rejected as heavier Tauri/Rust fork with same original author and licence."
+
+[[sources]]
+id = "openai-codex"
+project = "openai/codex"
+repository = "https://github.com/openai/codex"
+revision = "315195492c80fdade38e917c18f9584efd599304"
+revision_type = "commit"
+license = "Apache-2.0"
+license_file = "https://github.com/openai/codex/blob/315195492c80fdade38e917c18f9584efd599304/LICENSE"
+action = "adapt"
+status = "approved"
+purpose = "OpenAI Responses request structures, SSE event lifecycle, provider configuration expectations, authentication/header behaviour, retry and protocol-error patterns, minimal compatibility fixtures"
+source_files = [
+    "codex-rs/codex-api/src/endpoint/responses.rs",
+    "codex-rs/codex-api/src/requests/responses.rs",
+    "codex-rs/codex-api/src/sse/responses.rs",
+]
+planned_toche_files = ["src/protocol/openai_responses/mod.rs", "src/protocol/openai_responses/routes.rs", "src/protocol/openai_responses/types.rs"]
+production_dependency = false
+modified = true
+attribution_required = true
+verification = "Non-streaming and streaming Responses pass-through tests; SSE ordering; unknown-field preservation"
+notes = "No runtime dependency on full Codex workspace crates."
+
+[[sources]]
+id = "portkey-models"
+project = "Portkey-AI/models"
+repository = "https://github.com/Portkey-AI/models"
+revision = "72da8a5cbed3db8a7f845c5a64d720d2662ad165"
+revision_type = "commit"
+license = "MIT"
+license_file = "https://github.com/Portkey-AI/models/blob/72da8a5cbed3db8a7f845c5a64d720d2662ad165/LICENSE"
+action = "vendor"
+status = "approved"
+purpose = "Generated compact pricing snapshot for model cost resolution"
+source_files = ["pricing/anthropic.json", "pricing/openai.json", "pricing/*.json"]
+planned_toche_files = ["assets/pricing/"]
+production_dependency = false
+modified = true
+attribution_required = true
+verification = "Deterministic transformation; SHA-256 of source files recorded in M11 evidence; no runtime network dependency"
+notes = "BerriAI/litellm rejected: monolithic file, enterprise licencing caveats."
+
+[[sources]]
+id = "tensorzero"
+project = "tensorzero/tensorzero"
+repository = "https://github.com/tensorzero/tensorzero"
+revision = "reference-only"
+revision_type = "commit"
+license = "Apache-2.0"
+license_file = ""
+action = "reference"
+status = "approved"
+purpose = "Inference/request identity, episode/session grouping, configuration provenance, time to first token, raw protocol preservation"
+source_files = []
+planned_toche_files = []
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "No source code copied; vocabulary and architecture concepts documented"
+notes = "Reference only."
+
+[[sources]]
+id = "opentelemetry-genai"
+project = "open-telemetry/semantic-conventions"
+repository = "https://github.com/open-telemetry/semantic-conventions"
+revision = "reference-only"
+revision_type = "commit"
+license = "Apache-2.0"
+license_file = ""
+action = "reference"
+status = "approved"
+purpose = "GenAI semantic conventions vocabulary"
+source_files = []
+planned_toche_files = []
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "No source code copied; Toche may adopt vocabulary without claiming full OpenTelemetry compliance"
+notes = "Reference only."
+
+[[sources]]
+id = "inquire"
+project = "inquire"
+repository = "https://github.com/mikaelmello/inquire"
+revision = "0.9.4"
+revision_type = "crate"
+license = "MIT"
+license_file = "https://crates.io/crates/inquire/0.9.4"
+action = "depend"
+status = "approved"
+purpose = "Guided setup, selection, multiselect, confirmation, validation, password-safe input"
+source_files = []
+planned_toche_files = []
+production_dependency = true
+modified = false
+attribution_required = true
+verification = "cargo-deny and cargo-about pass; MSRV 1.80 <= Toche 1.86; Windows terminal support via crossterm default feature"
+notes = "Default features accepted."
+
+[[sources]]
+id = "toml_edit"
+project = "toml_edit"
+repository = "https://github.com/toml-rs/toml"
+revision = "0.25.13"
+revision_type = "crate"
+license = "MIT OR Apache-2.0"
+license_file = "https://crates.io/crates/toml_edit/0.25.13"
+action = "depend"
+status = "approved"
+purpose = "Preserve comments and ordering in Codex configuration; surgical Toche configuration migrations"
+source_files = []
+planned_toche_files = []
+production_dependency = true
+modified = false
+attribution_required = true
+verification = "cargo-deny and cargo-about pass; MSRV 1.85 <= Toche 1.86; default features (parse, display) sufficient"
+notes = "Existing toml dependency remains required for deserialization."
+
+[[sources]]
+id = "uuid"
+project = "uuid"
+repository = "https://github.com/uuid-rs/uuid"
+revision = "1.24.0"
+revision_type = "crate"
+license = "Apache-2.0 OR MIT"
+license_file = "https://crates.io/crates/uuid/1.24.0"
+action = "depend"
+status = "approved"
+purpose = "UUIDv7 runtime, request and session identifiers"
+source_files = []
+planned_toche_files = []
+production_dependency = true
+modified = false
+attribution_required = true
+verification = "cargo-deny and cargo-about pass; MSRV 1.85 <= Toche 1.86; features v7 + serde + rng approved"
+notes = "v7 requires rng; serde required for config/ledger serialization."
+
+[[sources]]
+id = "tower-http"
+project = "tower-http"
+repository = "https://github.com/tower-rs/tower-http"
+revision = "0.7.0"
+revision_type = "crate"
+license = "MIT"
+license_file = "https://crates.io/crates/tower-http/0.7.0"
+action = "depend"
+status = "approved"
+purpose = "Request IDs, tracing, carefully scoped timeout or propagation middleware"
+source_files = []
+planned_toche_files = []
+production_dependency = true
+modified = false
+attribution_required = true
+verification = "cargo-deny and cargo-about pass; MSRV 1.65 <= Toche 1.86; Axum/Tower 0.8 compatible; default features empty"
+notes = "Enable only request-id, trace, timeout features as needed."
+
+[[sources]]
+id = "wiremock"
+project = "wiremock-rs"
+repository = "https://github.com/LukeMathWalker/wiremock-rs"
+revision = "0.6.5"
+revision_type = "crate"
+license = "MIT/Apache-2.0"
+license_file = "https://crates.io/crates/wiremock/0.6.5"
+action = "depend"
+status = "approved"
+purpose = "Development-only HTTP and SSE upstream simulation"
+source_files = []
+planned_toche_files = []
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "cargo-deny and cargo-about pass; async runtime compatible; SSE and delayed-response suitability tested in M12"
+notes = "If SSE edge cases prove unsuitable, record ADR and evaluate narrower alternative."
+
+[[sources]]
+id = "insta"
+project = "insta"
+repository = "https://github.com/mitsuhiko/insta"
+revision = "1.48.0"
+revision_type = "crate"
+license = "Apache-2.0"
+license_file = "https://crates.io/crates/insta/1.48.0"
+action = "depend"
+status = "approved"
+purpose = "Development-only snapshots for setup plans, configuration patches, status, stats, receipts and protocol events"
+source_files = []
+planned_toche_files = []
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "cargo-deny and cargo-about pass; MSRV 1.66 <= Toche 1.86; redactions feature for secrets approved"
+notes = "Use redactions for any snapshot containing paths or generated IDs."
+
+[[sources]]
+id = "proptest"
+project = "proptest"
+repository = "https://github.com/proptest-rs/proptest"
+revision = "1.11.0"
+revision_type = "crate"
+license = "MIT OR Apache-2.0"
+license_file = "https://crates.io/crates/proptest/1.11.0"
+action = "depend"
+status = "approved"
+purpose = "Development-only property testing"
+source_files = []
+planned_toche_files = []
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "cargo-deny and cargo-about pass; MSRV 1.85 <= Toche 1.86; deterministic CI configuration via default features"
+notes = "Use deterministic seeding where reproducibility matters."
+
+[[sources]]
+id = "loom"
+project = "loom"
+repository = "https://github.com/tokio-rs/loom"
+revision = "0.7.2"
+revision_type = "crate"
+license = "MIT"
+license_file = "https://crates.io/crates/loom/0.7.2"
+action = "depend"
+status = "approved"
+purpose = "Development-only model testing for extracted flight registry"
+source_files = []
+planned_toche_files = []
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "cargo-deny and cargo-about pass; MSRV 1.65 <= Toche 1.86; Tokio compatible; default features sufficient"
+notes = "Must not be introduced into production runtime code."
+
+[[sources]]
+id = "cargo-deny"
+project = "cargo-deny"
+repository = "https://github.com/EmbarkStudios/cargo-deny"
+revision = "87da103c554376c89a641116f835a41073a9d774"
+revision_type = "commit"
+license = "MIT OR Apache-2.0"
+license_file = "https://github.com/EmbarkStudios/cargo-deny/blob/87da103c554376c89a641116f835a41073a9d774/LICENSE-MIT"
+action = "depend"
+status = "approved"
+purpose = "CI licence, advisory, source and dependency policy enforcement"
+source_files = []
+planned_toche_files = ["deny.toml", ".github/workflows/ci.yml"]
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "cargo deny check passes (clean); pinned via cargo install --git --rev 87da103c (tag 0.20.2) in CI"
+notes = "Tooling only. Commit SHA verified via git ls-remote."
+
+[[sources]]
+id = "cargo-about"
+project = "cargo-about"
+repository = "https://github.com/EmbarkStudios/cargo-about"
+revision = "d5b837793cbb01163ce3f754fe51e41a1270ebf9"
+revision_type = "commit"
+license = "MIT OR Apache-2.0"
+license_file = "https://github.com/EmbarkStudios/cargo-about/blob/d5b837793cbb01163ce3f754fe51e41a1270ebf9/LICENSE-MIT"
+action = "depend"
+status = "approved"
+purpose = "Generated Rust dependency attribution report"
+source_files = []
+planned_toche_files = ["about.toml", "about.hbs", ".github/workflows/ci.yml"]
+production_dependency = false
+modified = false
+attribution_required = true
+verification = "cargo about generate about.hbs -o <file> passes; does not replace THIRD_PARTY_NOTICES.md"
+notes = "Tooling only. Commit SHA verified via git ls-remote."
+
+[[rejected]]
+id = "salad-cc-switch-cli"
+project = "SaladDay/cc-switch-cli"
+repository = "https://github.com/SaladDay/cc-switch-cli"
+revision = "bca8b9457ca0f6c7e67e4d52fa61e880cbdeeef3"
+revision_type = "commit"
+license = "MIT"
+action = "rejected"
+reason = "Heavier Tauri/Rust fork with same original author and licence as farion1231/cc-switch; not the primary source for the narrow config-path/merge concepts Toche needs."
+
+[[rejected]]
+id = "litellm-pricing"
+project = "BerriAI/litellm"
+repository = "https://github.com/BerriAI/litellm"
+revision = "4d339648981ceb8c45df3081b388680084a2206d"
+revision_type = "commit"
+license = "MIT (with enterprise directory caveat)"
+action = "rejected"
+reason = "Monolithic 45k-line pricing file with enterprise licencing caveats; Portkey-AI/models provides cleaner per-provider JSON."

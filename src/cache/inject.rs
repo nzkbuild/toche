@@ -48,7 +48,7 @@ pub fn inject_cache_control(original_body: &str, plan: &BreakpointPlan) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use crate::profiles::types::CacheBreakpoint;
+    use crate::config::toche_config::CacheBreakpoint;
 
     use super::super::breakpoint::find_breakpoints;
     use super::*;

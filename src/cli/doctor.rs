@@ -1,5 +1,5 @@
-use crate::cli::connect::points_to_toche;
-use crate::profiles::loader::config_dir;
+use crate::config::loader::config_dir;
+use crate::integrations::points_to_toche;
 
 pub async fn run() -> anyhow::Result<()> {
     println!("Toche Doctor");
@@ -11,19 +11,31 @@ pub async fn run() -> anyhow::Result<()> {
     println!("Config directory: {}", dir.display());
     println!("  exists: {}", dir.exists());
 
-    // Profiles
-    let profiles_path = dir.join("profiles.toml");
-    println!("Profiles file: {}", profiles_path.display());
-    println!("  exists: {}", profiles_path.exists());
+    // Config files
+    let config_path = dir.join("config.toml");
+    let legacy_path = dir.join("profiles.toml");
+    println!("Config file: {}", config_path.display());
+    println!("  exists: {}", config_path.exists());
+    println!("Legacy profiles file: {}", legacy_path.display());
+    println!("  exists: {}", legacy_path.exists());
 
-    match crate::profiles::loader::load_profiles() {
-        Ok(profiles) => {
-            println!(
-                "  default profile: {}",
-                profiles.default.as_deref().unwrap_or("none")
-            );
-            for p in &profiles.profiles {
-                println!("    {} -> {}", p.name, p.upstream_url);
+    match crate::config::loader::load_config() {
+        Ok(config) => {
+            let default_name = config
+                .defaults
+                .integration
+                .and_then(|id| config.integrations.iter().find(|i| i.id == id))
+                .map(|i| i.name.clone())
+                .unwrap_or_else(|| "none".into());
+            println!("  default integration: {default_name}");
+            for i in &config.integrations {
+                let upstream = config
+                    .upstreams
+                    .iter()
+                    .find(|u| u.id == i.upstream)
+                    .map(|u| u.url.as_str())
+                    .unwrap_or("unknown");
+                println!("    {} -> {}", i.name, upstream);
             }
         }
         Err(e) => {
@@ -65,6 +77,36 @@ pub async fn run() -> anyhow::Result<()> {
     let backup_path = settings_path.with_extension("json.toche-backup");
     println!("Backup file: {}", backup_path.display());
     println!("  exists: {}", backup_path.exists());
+
+    // Codex integration
+    println!();
+    let codex_dir = crate::integrations::codex::discovery::codex_home();
+    println!("Codex directory: {}", codex_dir.display());
+    println!("  exists: {}", codex_dir.exists());
+
+    let codex_config_path = codex_dir.join("config.toml");
+    if codex_config_path.exists() {
+        match std::fs::read_to_string(&codex_config_path) {
+            Ok(content) => {
+                let pointing = content.contains("127.0.0.1:8743");
+                println!("  points to Toche: {pointing}");
+            }
+            Err(e) => {
+                println!("  error reading config.toml: {e}");
+            }
+        }
+    } else {
+        println!("  config.toml: not found");
+    }
+
+    let codex_backup = codex_dir.join("config.toml.toche-backup");
+    println!("Codex backup file: {}", codex_backup.display());
+    println!("  exists: {}", codex_backup.exists());
+
+    let codex_bin = which::which("codex")
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "not installed".into());
+    println!("Codex binary: {}", codex_bin);
 
     // Graphify
     println!();
