@@ -1,10 +1,12 @@
 use anyhow::Context;
 use axum::Router;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
-use crate::config::loader::{config_dir, load_config};
+use crate::config::loader::{config_dir, load_config, load_default_integration};
+use crate::config::resolver::ResolvedIntegration;
 use crate::identity::{self, RuntimeId};
 use crate::shield;
 
@@ -14,10 +16,24 @@ pub struct AppState {
     pub runtime_id: RuntimeId,
     pub config_snapshot_hash: String,
     pub config_port: u16,
+    pub request_timeout_ms: u64,
+    pub default_integration: Option<ResolvedIntegration>,
 }
 
-pub async fn serve() -> anyhow::Result<()> {
-    let dir = config_dir();
+/// Build the application router with full middleware stack.
+///
+/// When `config_dir_override` is `Some(dir)`, sets `TOCHE_CONFIG_DIR` to `dir`
+/// before loading config. This allows integration tests to isolate config from
+/// the real `~/.toche` directory.
+pub fn build_router(config_dir_override: Option<PathBuf>) -> anyhow::Result<Router> {
+    let dir = if let Some(override_dir) = config_dir_override {
+        // SAFETY: set in test-only contexts with isolated temp dirs, never called concurrently
+        unsafe { std::env::set_var("TOCHE_CONFIG_DIR", override_dir.as_os_str()) };
+        override_dir
+    } else {
+        config_dir()
+    };
+
     let runtime_id = RuntimeId::load_or_create(&dir);
     info!("Toche runtime id: {}", runtime_id);
 
@@ -26,14 +42,17 @@ pub async fn serve() -> anyhow::Result<()> {
     let config_snapshot_hash = identity::compute_config_snapshot(&config_toml);
 
     let port = config.runtime.port;
+    let request_timeout_ms = config.runtime.request_timeout_ms;
+    let default_integration = load_default_integration().ok();
     let state = Arc::new(AppState {
         runtime_id,
         config_snapshot_hash,
         config_port: port,
+        request_timeout_ms,
+        default_integration,
     });
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let app = Router::new()
+    Ok(Router::new()
         .route("/v1/messages", axum::routing::post(super::routes::messages))
         .route(
             "/v1/responses",
@@ -42,7 +61,15 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/health", axum::routing::get(health))
         .route("/ready", axum::routing::get(ready))
         .route("/status", axum::routing::get(runtime_status))
-        .with_state(state);
+        .with_state(state))
+}
+
+pub async fn serve() -> anyhow::Result<()> {
+    let app = build_router(None)?;
+
+    let config = load_config().context("Failed to load configuration")?;
+    let port = config.runtime.port;
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     info!("Toche gateway listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr)

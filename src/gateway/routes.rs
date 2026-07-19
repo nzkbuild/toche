@@ -9,7 +9,7 @@ use reqwest::Client;
 use tracing::{error, info};
 
 use crate::cache;
-use crate::config::loader::{config_dir, load_default_integration};
+use crate::config::loader::config_dir;
 use crate::config::toche_config::CacheMode;
 use crate::continuity;
 use crate::efficiency;
@@ -114,8 +114,8 @@ pub async fn messages(
     let timer = RequestTimer::start();
     let request_id = RequestId::new();
 
-    let resolved = load_default_integration().map_err(|e| {
-        error!("Failed to load default integration: {e}");
+    let resolved = state.default_integration.clone().ok_or_else(|| {
+        error!("No default integration configured");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -124,6 +124,15 @@ pub async fn messages(
     let model = protocol.extract_model(&body);
     let integration_name = resolved.name.clone();
     let input_tokens = estimate_tokens(&body);
+
+    // Model validation: if integration has a whitelist, reject unknown models
+    if !resolved.models.is_empty() && !resolved.models.contains_key(&model) {
+        error!(
+            "Model '{}' not configured for integration '{}'. Allowed: {:?}",
+            model, integration_name, resolved.models.keys().collect::<Vec<_>>()
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     let upstream_url = format!(
         "{}{}",
@@ -198,6 +207,7 @@ pub async fn messages(
     );
 
     let client = Client::builder()
+        .timeout(std::time::Duration::from_millis(state.request_timeout_ms))
         .build()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -239,10 +249,6 @@ pub async fn messages(
     let is_streaming = protocol.is_streaming(&body);
 
     let fingerprint = protocol.fingerprint(&body);
-
-    // Streaming requests must bypass the flight registry.
-    // Buffered-after-completion replay is not transparent streaming coalescing.
-    // Streaming coalescing with fan-out is deferred to a future milestone.
     let shield_result = if bypass_shield || is_streaming {
         shield::coalesce::CoalesceResult::Forward { key: String::new() }
     } else {
@@ -629,8 +635,8 @@ pub async fn responses(
     let timer = RequestTimer::start();
     let request_id = RequestId::new();
 
-    let resolved = load_default_integration().map_err(|e| {
-        error!("Failed to load default integration: {e}");
+    let resolved = state.default_integration.clone().ok_or_else(|| {
+        error!("No default integration configured");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -687,6 +693,7 @@ pub async fn responses(
     );
 
     let client = Client::builder()
+        .timeout(std::time::Duration::from_millis(state.request_timeout_ms))
         .build()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 

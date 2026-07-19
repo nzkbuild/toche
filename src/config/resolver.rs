@@ -21,6 +21,9 @@ pub struct ResolvedIntegration {
     pub efficiency: Option<EfficiencyConfig>,
     pub safe_cache: Option<SafeCacheConfig>,
     pub graphify: Option<GraphifyConfig>,
+    /// Model name allowlist from integration config. When non-empty, only
+    /// models present in this map may be requested through the gateway.
+    pub models: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +109,7 @@ fn resolve_integration(config: &TocheConfig, integration: &Integration) -> Resol
         efficiency: policy.and_then(|p| p.efficiency.clone()),
         safe_cache: policy.and_then(|p| p.safe_cache.clone()),
         graphify: integration.graphify.clone(),
+        models: integration.models.clone(),
     }
 }
 
