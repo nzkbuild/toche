@@ -63,7 +63,11 @@ enum Commands {
     /// Verify Toche installation and configuration
     Doctor,
     /// Show gateway status
-    Status,
+    Status {
+        /// Output in machine-readable JSON format
+        #[arg(long)]
+        json: bool,
+    },
     /// Show usage statistics and cost breakdown
     Stats {
         /// Output in machine-readable JSON format
@@ -72,6 +76,15 @@ enum Commands {
         /// Show recent entries (last N, default 50)
         #[arg(long, default_value = "50")]
         entries: u32,
+        /// Filter by protocol (anthropic, openai-responses)
+        #[arg(long)]
+        protocol: Option<String>,
+        /// Filter by integration name
+        #[arg(long)]
+        integration: Option<String>,
+        /// Filter by trust domain hash
+        #[arg(long)]
+        trust_domain: Option<String>,
     },
     /// Restore original tool output from a reduction hash
     Expand {
@@ -205,8 +218,23 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Disconnect { agent }) => cli::disconnect::run(agent.as_deref()).await,
         Some(Commands::Run { client, args }) => cli::run::run(&client, args).await,
         Some(Commands::Doctor) => cli::doctor::run().await,
-        Some(Commands::Status) => cli::status::run().await,
-        Some(Commands::Stats { json, entries }) => cli::stats::run(json, entries).await,
+        Some(Commands::Status { json }) => cli::status::run(json).await,
+        Some(Commands::Stats {
+            json,
+            entries,
+            protocol,
+            integration,
+            trust_domain,
+        }) => {
+            cli::stats::run(
+                json,
+                entries,
+                protocol.as_deref(),
+                integration.as_deref(),
+                trust_domain.as_deref(),
+            )
+            .await
+        }
         Some(Commands::Expand { hash, json }) => cli::expand::run(hash, json).await,
         Some(Commands::Cache { action }) => match action {
             CacheAction::Inspect { json, entries } => cli::cache::run_inspect(json, entries).await,

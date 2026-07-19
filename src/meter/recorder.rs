@@ -120,6 +120,7 @@ mod tests {
             trust_domain_id: "deadbeef1234abcd".into(),
             config_snapshot_hash: "abcdef01".into(),
             attribution: "unknown".into(),
+            protocol: "anthropic".into(),
         };
 
         let _id = record_request(&db, &pricing, record).unwrap();
@@ -160,6 +161,7 @@ mod tests {
             trust_domain_id: "deadbeef1234abcd".into(),
             config_snapshot_hash: "abcdef01".into(),
             attribution: "unknown".into(),
+            protocol: "anthropic".into(),
         };
 
         let _id = record_request(&db, &pricing, record).unwrap();

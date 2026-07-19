@@ -34,6 +34,7 @@ pub struct NewLedgerRecord {
     pub trust_domain_id: String,
     pub config_snapshot_hash: String,
     pub attribution: String,
+    pub protocol: String,
 }
 
 pub struct LedgerDb {
@@ -73,7 +74,7 @@ impl LedgerDb {
             )
             .unwrap_or(0);
 
-        const EXPECTED_VERSION: i32 = 10;
+        const EXPECTED_VERSION: i32 = 11;
 
         if current_version > EXPECTED_VERSION {
             anyhow::bail!(
@@ -185,6 +186,15 @@ impl LedgerDb {
             conn.execute("INSERT INTO schema_version (version) VALUES (10)", [])?;
         }
 
+        // Version 11: protocol column for multi-protocol reporting (M11)
+        if current_version < 11 {
+            conn.execute(
+                "ALTER TABLE ledger ADD COLUMN protocol TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (11)", [])?;
+        }
+
         // Indexes (safe to recreate)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ledger_timestamp ON ledger(timestamp)",
@@ -215,8 +225,8 @@ impl LedgerDb {
             "INSERT INTO ledger (timestamp, model, profile_name, input_tokens, output_tokens,
              cache_read_input_tokens, cache_creation_input_tokens, coalesced_count, latency_ms, status, cost, project_path,
              reduction_input_tokens, reduction_output_tokens, reduction_count, efficiency_mode, local_cache_hit,
-             runtime_id, request_id, integration_id, upstream_id, trust_domain_id, config_snapshot_hash, attribution)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+             runtime_id, request_id, integration_id, upstream_id, trust_domain_id, config_snapshot_hash, attribution, protocol)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
             rusqlite::params![
                 entry.timestamp.to_rfc3339(),
                 entry.model,
@@ -242,6 +252,7 @@ impl LedgerDb {
                 entry.trust_domain_id,
                 entry.config_snapshot_hash,
                 entry.attribution,
+                entry.protocol,
             ],
         )?;
         self.cleanup_old()?;
@@ -451,7 +462,7 @@ impl LedgerDb {
             "SELECT id, timestamp, model, profile_name, input_tokens, output_tokens,
                     cache_read_input_tokens, cache_creation_input_tokens, coalesced_count, latency_ms, status, cost, project_path,
                     reduction_input_tokens, reduction_output_tokens, reduction_count, efficiency_mode, local_cache_hit,
-                    runtime_id, request_id, integration_id, upstream_id, trust_domain_id, config_snapshot_hash, attribution
+                    runtime_id, request_id, integration_id, upstream_id, trust_domain_id, config_snapshot_hash, attribution, protocol
              FROM ledger
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
              ORDER BY timestamp DESC LIMIT ?3",
@@ -487,6 +498,7 @@ impl LedgerDb {
                 trust_domain_id: row.get(22)?,
                 config_snapshot_hash: row.get(23)?,
                 attribution: row.get(24)?,
+                protocol: row.get(25)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -530,6 +542,7 @@ mod tests {
             trust_domain_id: "deadbeef1234abcd".into(),
             config_snapshot_hash: "abcdef01".into(),
             attribution: "unknown".into(),
+            protocol: "anthropic".into(),
         };
         let id = db.record(&record).unwrap();
         assert!(id > 0);
@@ -569,6 +582,7 @@ mod tests {
             trust_domain_id: "deadbeef1234abcd".into(),
             config_snapshot_hash: "abcdef01".into(),
             attribution: "unknown".into(),
+            protocol: "anthropic".into(),
         })
         .unwrap();
         db.record(&NewLedgerRecord {
@@ -596,6 +610,7 @@ mod tests {
             trust_domain_id: "deadbeef1234abcd".into(),
             config_snapshot_hash: "abcdef01".into(),
             attribution: "unknown".into(),
+            protocol: "anthropic".into(),
         })
         .unwrap();
 
@@ -636,6 +651,7 @@ mod tests {
             trust_domain_id: "deadbeef1234abcd".into(),
             config_snapshot_hash: "abcdef01".into(),
             attribution: "unknown".into(),
+            protocol: "anthropic".into(),
         })
         .unwrap();
 

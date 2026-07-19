@@ -109,6 +109,16 @@ impl CoalesceStore {
             let _ = sender.send(None);
         }
     }
+    /// Return a snapshot of active flight keys for observability.
+    /// Each entry is (key, receiver_count) where receiver_count includes
+    /// the leader's own sender (so 1+ means at least 1 waiter is waiting).
+    pub fn active_flights(&self) -> Vec<(String, usize)> {
+        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        pending
+            .iter()
+            .map(|(k, tx)| (k.clone(), tx.receiver_count()))
+            .collect()
+    }
 }
 
 /// Global singleton coalescing store.

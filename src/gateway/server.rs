@@ -6,12 +6,14 @@ use tracing::info;
 
 use crate::config::loader::{config_dir, load_config};
 use crate::identity::{self, RuntimeId};
+use crate::shield;
 
 /// Application state shared across all request handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub runtime_id: RuntimeId,
     pub config_snapshot_hash: String,
+    pub config_port: u16,
 }
 
 pub async fn serve() -> anyhow::Result<()> {
@@ -23,12 +25,13 @@ pub async fn serve() -> anyhow::Result<()> {
     let config_toml = toml::to_string_pretty(&config).unwrap_or_default();
     let config_snapshot_hash = identity::compute_config_snapshot(&config_toml);
 
+    let port = config.runtime.port;
     let state = Arc::new(AppState {
         runtime_id,
         config_snapshot_hash,
+        config_port: port,
     });
 
-    let port = config.runtime.port;
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let app = Router::new()
         .route("/v1/messages", axum::routing::post(super::routes::messages))
@@ -38,6 +41,7 @@ pub async fn serve() -> anyhow::Result<()> {
         )
         .route("/health", axum::routing::get(health))
         .route("/ready", axum::routing::get(ready))
+        .route("/status", axum::routing::get(runtime_status))
         .with_state(state);
 
     info!("Toche gateway listening on {}", addr);
@@ -84,5 +88,58 @@ async fn ready() -> axum::response::Json<serde_json::Value> {
     axum::response::Json(serde_json::json!({
         "status": status,
         "checks": checks,
+    }))
+}
+
+/// Full runtime status — live state including active flights, clients, and health.
+async fn runtime_status(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::response::Json<serde_json::Value> {
+    let flights = shield::coalesce::store().active_flights();
+
+    let mut flight_entries: Vec<serde_json::Value> = Vec::new();
+    let mut protocol_counts: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
+    let mut integration_counts: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
+
+    for (key, waiter_count) in &flights {
+        // Parse flight key: {url}|{fingerprint}|{trust_domain}|{policy_hash}
+        let parts: Vec<&str> = key.split('|').collect();
+        let url = parts.first().unwrap_or(&"unknown");
+        let domain = parts.get(2).unwrap_or(&"unknown");
+
+        flight_entries.push(serde_json::json!({
+            "upstream_url": url,
+            "trust_domain_hash": domain,
+            "waiter_count": waiter_count.saturating_sub(1), // exclude leader
+        }));
+    }
+
+    // Count by protocol from ledger
+    let db_path = config_dir().join("ledger.db");
+    if let Ok(db) = crate::meter::db::LedgerDb::open(&db_path) {
+        if let Ok(entries) = db.get_entries(1000, None) {
+            for e in &entries {
+                *protocol_counts.entry(e.protocol.clone()).or_insert(0) += 1;
+                *integration_counts
+                    .entry(e.profile_name.clone())
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+
+    let degraded: Vec<String> = Vec::new(); // future: check optional subsystems
+
+    axum::response::Json(serde_json::json!({
+        "runtime_id": state.runtime_id.as_str(),
+        "config_snapshot_hash": state.config_snapshot_hash,
+        "port": state.config_port,
+        "active_flights": flights.len(),
+        "flight_details": flight_entries,
+        "protocol_counts": protocol_counts,
+        "integration_counts": integration_counts,
+        "degraded_systems": degraded,
+        "schema_version": 11,
     }))
 }

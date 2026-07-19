@@ -611,6 +611,7 @@ pub async fn messages(
             trust_domain_id: id_ctx_for_ledger.trust_domain_id.as_str().to_string(),
             config_snapshot_hash: id_ctx_for_ledger.config_snapshot_hash,
             attribution: id_ctx_for_ledger.attribution.to_string(),
+            protocol: "anthropic".to_string(),
         };
         if let Err(e) = record_request(&db, &pricing, record) {
             error!("Failed to record to ledger: {e}");
@@ -787,6 +788,7 @@ pub async fn responses(
             trust_domain_id: id_ctx_for_ledger.trust_domain_id.as_str().to_string(),
             config_snapshot_hash: id_ctx_for_ledger.config_snapshot_hash,
             attribution: id_ctx_for_ledger.attribution.to_string(),
+            protocol: "openai-responses".to_string(),
         };
         if let Err(e) = record_request(&db, &pricing, record) {
             error!("Failed to record to ledger: {e}");

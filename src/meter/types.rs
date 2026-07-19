@@ -28,6 +28,7 @@ pub struct LedgerEntry {
     pub trust_domain_id: String,
     pub config_snapshot_hash: String,
     pub attribution: String,
+    pub protocol: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,6 +102,57 @@ pub struct DayBreakdown {
 pub struct StatsOutput {
     pub summary: StatsSummary,
     pub entries: Vec<LedgerEntry>,
+}
+
+/// Schema-versioned JSON stats output (M11).
+#[derive(Debug, Clone, Serialize)]
+pub struct StatsOutputV1 {
+    pub schema_version: String,
+    pub summary: StatsSummary,
+    pub entries: Vec<LedgerEntry>,
+    pub by_protocol: Vec<ProtocolBreakdown>,
+    pub by_integration: Vec<IntegrationBreakdown>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProtocolBreakdown {
+    pub protocol: String,
+    pub breakdown: UsageBreakdown,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IntegrationBreakdown {
+    pub integration: String,
+    pub breakdown: UsageBreakdown,
+}
+
+/// Measurement confidence per M11 requirements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum MeasurementConfidence {
+    /// Token counts derived from actual HTTP body measurement.
+    Measured,
+    /// Values reported by the provider in response headers.
+    ProviderReported,
+    /// Values estimated from byte/character counts.
+    Estimated,
+    /// Values from configuration (pricing, expected model).
+    Configured,
+    /// Value could not be determined.
+    Unknown,
+}
+
+impl std::fmt::Display for MeasurementConfidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MeasurementConfidence::Measured => f.write_str("measured"),
+            MeasurementConfidence::ProviderReported => f.write_str("provider-reported"),
+            MeasurementConfidence::Estimated => f.write_str("estimated"),
+            MeasurementConfidence::Configured => f.write_str("configured"),
+            MeasurementConfidence::Unknown => f.write_str("unknown"),
+        }
+    }
 }
 
 #[cfg(test)]
