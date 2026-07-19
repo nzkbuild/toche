@@ -15,7 +15,7 @@ use chrono::Utc;
 use rusqlite::Connection;
 use tempfile::TempDir;
 
-use toche::config::migration::{detect_and_load, ConfigSource};
+use toche::config::migration::{ConfigSource, detect_and_load};
 use toche::config::toche_config::TocheConfig;
 use toche::meter::db::{LedgerDb, NewLedgerRecord};
 use toche::reduce::storage as cas;
@@ -218,9 +218,7 @@ fn ledger_migration_v10_to_v11_applies_protocol_column() {
         assert_eq!(version, 10, "pre-migration version should be 10");
 
         // protocol column should NOT exist yet
-        let has_protocol: bool = conn
-            .prepare("SELECT protocol FROM ledger LIMIT 1")
-            .is_ok();
+        let has_protocol: bool = conn.prepare("SELECT protocol FROM ledger LIMIT 1").is_ok();
         assert!(
             !has_protocol,
             "protocol column should not exist in v10 schema"
@@ -232,7 +230,9 @@ fn ledger_migration_v10_to_v11_applies_protocol_column() {
         let db = LedgerDb::open(&db_path).expect("migration v10→v11 should succeed");
 
         // Verify schema version is now 11
-        let entries = db.get_entries(10, None).expect("get_entries after migration");
+        let entries = db
+            .get_entries(10, None)
+            .expect("get_entries after migration");
         assert_eq!(entries.len(), 2, "both rows should survive migration");
 
         // First row (v1-era) — protocol should be default empty
@@ -292,7 +292,9 @@ fn ledger_migration_is_idempotent() {
     {
         let db = LedgerDb::open(&db_path).expect("second open should succeed");
 
-        let entries = db.get_entries(10, None).expect("get_entries after second open");
+        let entries = db
+            .get_entries(10, None)
+            .expect("get_entries after second open");
         assert_eq!(
             entries.len(),
             3,
@@ -392,7 +394,10 @@ fn config_roundtrip_v1_profiles_to_v2_reload() {
     let first = detect_and_load(dir.path()).expect("first detect_and_load");
     let config1 = match first {
         ConfigSource::V1Migrated(c) => c,
-        other => panic!("expected V1Migrated, got {:?}", std::any::type_name_of_val(&other)),
+        other => panic!(
+            "expected V1Migrated, got {:?}",
+            std::any::type_name_of_val(&other)
+        ),
     };
 
     // Step 2: Verify config.toml was written
@@ -462,10 +467,7 @@ fn config_roundtrip_v1_profiles_to_v2_reload() {
     // Efficiency mode preserved
     let eff = default_pol.efficiency.as_ref().unwrap();
     assert!(
-        matches!(
-            eff.mode,
-            toche::efficiency::config::EfficiencyMode::Concise
-        ),
+        matches!(eff.mode, toche::efficiency::config::EfficiencyMode::Concise),
         "expected Concise efficiency mode"
     );
 
@@ -482,8 +484,7 @@ fn config_roundtrip_v1_profiles_to_v2_reload() {
 
     // IDs from step 1 and step 2 must match
     assert_eq!(
-        config1.integrations[0].id,
-        config2.integrations[0].id,
+        config1.integrations[0].id, config2.integrations[0].id,
         "IDs from first load and reload must be identical"
     );
 }
@@ -501,30 +502,27 @@ fn config_roundtrip_load_save_reload_is_stable() {
     let source = detect_and_load(dir.path()).expect("second load");
     let config_a = match source {
         ConfigSource::V2(c) => c,
-        other => panic!("expected V2 on reload, got {:?}", std::any::type_name_of_val(&other)),
+        other => panic!(
+            "expected V2 on reload, got {:?}",
+            std::any::type_name_of_val(&other)
+        ),
     };
 
     // Third load: still reads the same config.toml
     let source2 = detect_and_load(dir.path()).expect("third load");
     let config_b = match source2 {
         ConfigSource::V2(c) => c,
-        other => panic!("expected V2 on third load, got {:?}", std::any::type_name_of_val(&other)),
+        other => panic!(
+            "expected V2 on third load, got {:?}",
+            std::any::type_name_of_val(&other)
+        ),
     };
 
     // All three loads should produce structurally identical configs
     assert_eq!(config_a.integrations.len(), config_b.integrations.len());
-    assert_eq!(
-        config_a.integrations[0].id,
-        config_b.integrations[0].id
-    );
-    assert_eq!(
-        config_a.upstreams[0].url,
-        config_b.upstreams[0].url
-    );
-    assert_eq!(
-        config_a.defaults.integration,
-        config_b.defaults.integration
-    );
+    assert_eq!(config_a.integrations[0].id, config_b.integrations[0].id);
+    assert_eq!(config_a.upstreams[0].url, config_b.upstreams[0].url);
+    assert_eq!(config_a.defaults.integration, config_b.defaults.integration);
 
     // Verify backup exists and profiles.toml was removed
     assert!(
@@ -543,16 +541,8 @@ fn config_roundtrip_preserves_deterministic_ids() {
     let dir1 = temp_config_dir();
     let dir2 = temp_config_dir();
 
-    std::fs::write(
-        dir1.path().join("profiles.toml"),
-        V1_0_10_PROFILES_TOML,
-    )
-    .unwrap();
-    std::fs::write(
-        dir2.path().join("profiles.toml"),
-        V1_0_10_PROFILES_TOML,
-    )
-    .unwrap();
+    std::fs::write(dir1.path().join("profiles.toml"), V1_0_10_PROFILES_TOML).unwrap();
+    std::fs::write(dir2.path().join("profiles.toml"), V1_0_10_PROFILES_TOML).unwrap();
 
     let source1 = detect_and_load(dir1.path()).expect("dir1 load");
     let source2 = detect_and_load(dir2.path()).expect("dir2 load");
@@ -600,7 +590,10 @@ fn cas_store_and_retrieve_roundtrip() {
 
     assert!(cas_dir.exists(), "cas/ directory should exist");
     assert!(prefix_dir.exists(), "cas/<first2>/ directory should exist");
-    assert!(blob_file.is_file(), "cas/<first2>/<remaining> blob should exist");
+    assert!(
+        blob_file.is_file(),
+        "cas/<first2>/<remaining> blob should exist"
+    );
 
     // Read raw bytes from disk to verify integrity
     let raw = std::fs::read(&blob_file).expect("read CAS blob from disk");
