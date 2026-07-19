@@ -5,7 +5,7 @@ use wiremock::matchers::{method, path};
 use wiremock::ResponseTemplate;
 
 use toche::config::toche_config::derive_id;
-use toche::gateway::build_router;
+use toche::gateway::server::build_router;
 
 /// Serialize tests that mutate `TOCHE_CONFIG_DIR` env var.
 static CONFIG_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

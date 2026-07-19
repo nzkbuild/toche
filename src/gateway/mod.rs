@@ -1,4 +1,4 @@
 mod routes;
-mod server;
+pub mod server;
 
-pub use server::{build_router, serve};
+pub use server::serve;

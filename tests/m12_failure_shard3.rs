@@ -5,7 +5,7 @@ use wiremock::MockServer;
 use wiremock::matchers::{method, path};
 use wiremock::ResponseTemplate;
 
-use toche::gateway::build_router;
+use toche::gateway::server::build_router;
 
 /// Serialize tests that mutate `TOCHE_CONFIG_DIR` env var.
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
@@ -71,16 +71,14 @@ name = "default"
 async fn spawn_gateway(
     config_dir: &Path,
     config_toml: &str,
-) -> (
-    SocketAddr,
-    tokio::task::JoinHandle<()>,
-    std::sync::MutexGuard<'static, ()>,
-) {
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     std::fs::create_dir_all(config_dir).unwrap();
     std::fs::write(config_dir.join("config.toml"), config_toml).unwrap();
 
-    let lock = CONFIG_LOCK.lock().unwrap();
-    let app = build_router(Some(config_dir.to_path_buf())).unwrap();
+    let app = {
+        let _lock = CONFIG_LOCK.lock().unwrap();
+        build_router(Some(config_dir.to_path_buf())).unwrap()
+    };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -88,7 +86,7 @@ async fn spawn_gateway(
         axum::serve(listener, app).await.unwrap();
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    (addr, handle, lock)
+    (addr, handle)
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
@@ -112,7 +110,7 @@ async fn non_git_workspace_no_crash() {
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path().join("toche");
     let config = minimal_config();
-    let (addr, _handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
 
     let resp = reqwest::get(format!("http://{addr}/health")).await.unwrap();
     assert_eq!(resp.status(), 200);
@@ -153,7 +151,7 @@ async fn dirty_git_workspace_succeeds() {
         .await;
 
     let config = config_with_upstream(&mock.uri());
-    let (addr, _handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -196,7 +194,7 @@ async fn ledger_locked_traffic_passes() {
         .await;
 
     let config = config_with_upstream(&mock.uri());
-    let (addr, _handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
 
     // Make a request to ensure ledger.db is created by the async recording task
     let client = reqwest::Client::new();
