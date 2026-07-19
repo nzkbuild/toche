@@ -59,13 +59,14 @@ async fn spawn_gateway(
 ) -> (
     SocketAddr,
     tokio::task::JoinHandle<()>,
-    std::sync::MutexGuard<'static, ()>,
 ) {
     std::fs::create_dir_all(config_dir).unwrap();
     std::fs::write(config_dir.join("config.toml"), config_toml).unwrap();
 
-    let lock = CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let app = build_router(Some(config_dir.to_path_buf())).unwrap();
+    let app = {
+        let _lock = CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        build_router(Some(config_dir.to_path_buf())).unwrap()
+    };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -73,7 +74,7 @@ async fn spawn_gateway(
         axum::serve(listener, app).await.unwrap();
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    (addr, handle, lock)
+    (addr, handle)
 }
 
 fn claude_body(model: &str, content: &str) -> String {
@@ -109,7 +110,7 @@ async fn unknown_headers_forwarded() {
         .await;
 
     let config = config_with_upstream(&mock.uri());
-    let (addr, handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, handle) = spawn_gateway(&config_dir, &config).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -130,7 +131,6 @@ async fn unknown_headers_forwarded() {
     assert_eq!(health.status(), 200);
 
     drop(handle);
-    drop(_lock);
 }
 
 // ─── Test 2: upstream_rejects_toche_headers ──────────────────────────────
@@ -170,7 +170,7 @@ async fn upstream_rejects_toche_headers() {
         .await;
 
     let config = config_with_upstream(&mock.uri());
-    let (addr, handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, handle) = spawn_gateway(&config_dir, &config).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -193,16 +193,17 @@ async fn upstream_rejects_toche_headers() {
     );
 
     // Verify the upstream received the Toche headers (gateway forwarded them)
-    let h = received_headers.lock().unwrap();
-    let has_toche_bypass = h.iter().any(|n| n.to_lowercase() == "x-toche-bypass");
-    assert!(has_toche_bypass, "upstream should receive x-toche-bypass header, saw: {h:?}");
+    let has_toche_bypass = {
+        let h = received_headers.lock().unwrap();
+        h.iter().any(|n| n.to_lowercase() == "x-toche-bypass")
+    };
+    assert!(has_toche_bypass, "upstream should receive x-toche-bypass header");
 
     // Health check still works after 400 response handling
     let health = reqwest::get(format!("http://{addr}/health")).await.unwrap();
     assert_eq!(health.status(), 200);
 
     drop(handle);
-    drop(_lock);
 }
 
 // ─── Test 3: binary_content_passthrough ─────────────────────────────────
@@ -233,7 +234,7 @@ async fn binary_content_passthrough() {
         .await;
 
     let config = config_with_upstream(&mock.uri());
-    let (addr, handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, handle) = spawn_gateway(&config_dir, &config).await;
 
     // Body with non-ASCII Unicode, multi-byte sequences, RTL markers, and binary-like content
     // Avoid raw \0 (null byte) which is invalid in JSON strings.
@@ -276,7 +277,6 @@ async fn binary_content_passthrough() {
     );
 
     drop(handle);
-    drop(_lock);
 }
 
 // ─── Test 4: already_reduced_content ─────────────────────────────────────
@@ -307,7 +307,7 @@ async fn already_reduced_content() {
         .await;
 
     let config = config_with_upstream(&mock.uri());
-    let (addr, handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, handle) = spawn_gateway(&config_dir, &config).await;
 
     // Already minimal content — a single short message with no tool results
     let body = r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#;
@@ -332,7 +332,6 @@ async fn already_reduced_content() {
         serde_json::from_str(&fwd).expect("forwarded body after reduce should be valid JSON");
 
     drop(handle);
-    drop(_lock);
 }
 
 // ─── Test 5: multi_claude_concurrent_flights ──────────────────────────────
@@ -363,7 +362,7 @@ async fn multi_claude_concurrent_flights() {
         .await;
 
     let config = config_with_upstream(&mock.uri());
-    let (addr, handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, handle) = spawn_gateway(&config_dir, &config).await;
 
     // Same body for both requests — identical fingerprint, non-streaming
     let body1 = claude_body("claude-sonnet-5", "Say hello");
@@ -407,7 +406,6 @@ async fn multi_claude_concurrent_flights() {
     assert_eq!(body_a, body_b, "coalesced responses should have identical bodies");
 
     drop(handle);
-    drop(_lock);
 }
 
 // ─── Test 6: multi_codex_concurrent_flights ───────────────────────────────
@@ -438,7 +436,7 @@ async fn multi_codex_concurrent_flights() {
         .await;
 
     let config = config_with_upstream(&mock.uri());
-    let (addr, handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, handle) = spawn_gateway(&config_dir, &config).await;
 
     let body1 = codex_body("gpt-5.6", "Hello");
     let body2 = body1.clone();
@@ -475,7 +473,6 @@ async fn multi_codex_concurrent_flights() {
     );
 
     drop(handle);
-    drop(_lock);
 }
 
 // ─── Test 7: claude_codex_concurrent_no_cross_protocol_coalesce ───────────
@@ -523,7 +520,7 @@ async fn claude_codex_concurrent_no_cross_protocol_coalesce() {
         .await;
 
     let config = config_with_upstream(&mock.uri());
-    let (addr, handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, handle) = spawn_gateway(&config_dir, &config).await;
 
     let claude_body = claude_body("claude-sonnet-5", "Hello from Claude");
     let codex_bdy = codex_body("gpt-5.6", "Hello from Codex");
@@ -573,5 +570,4 @@ async fn claude_codex_concurrent_no_cross_protocol_coalesce() {
     );
 
     drop(handle);
-    drop(_lock);
 }

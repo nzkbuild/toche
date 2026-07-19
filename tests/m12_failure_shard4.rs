@@ -57,13 +57,14 @@ async fn spawn_gateway(
 ) -> (
     SocketAddr,
     tokio::task::JoinHandle<()>,
-    std::sync::MutexGuard<'static, ()>,
 ) {
     std::fs::create_dir_all(config_dir).unwrap();
     std::fs::write(config_dir.join("config.toml"), config_toml).unwrap();
 
-    let lock = CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let app = build_router(Some(config_dir.to_path_buf())).unwrap();
+    let app = {
+        let _lock = CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        build_router(Some(config_dir.to_path_buf())).unwrap()
+    };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -71,7 +72,7 @@ async fn spawn_gateway(
         axum::serve(listener, app).await.unwrap();
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    (addr, handle, lock)
+    (addr, handle)
 }
 
 // ─── Test 1: killed_runtime_recovery ──────────────────────────────────
@@ -95,7 +96,7 @@ async fn killed_runtime_recovery() {
         .await;
 
     let config = config_with_upstream(&mock.uri());
-    let (addr, handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, handle) = spawn_gateway(&config_dir, &config).await;
 
     let client = reqwest::Client::new();
     let _ = client
@@ -114,7 +115,6 @@ async fn killed_runtime_recovery() {
 
     // Simulate SIGTERM: drop the gateway gracefully
     drop(handle);
-    drop(_lock);
 
     // Phase 2: Verify ledger.db exists and is valid (no corruption)
     let ledger_path = config_dir.join("ledger.db");
@@ -134,12 +134,11 @@ async fn killed_runtime_recovery() {
     }
 
     // Phase 3: Restart — build_router opens the existing ledger.db and should not fail
-    let (addr2, handle2, _lock2) = spawn_gateway(&config_dir, &config).await;
+    let (addr2, handle2) = spawn_gateway(&config_dir, &config).await;
     let resp = reqwest::get(format!("http://{addr2}/health")).await.unwrap();
     assert_eq!(resp.status(), 200, "restarted gateway should serve /health");
 
     drop(handle2);
-    drop(_lock2);
 }
 
 // ─── Test 2: power_loss_simulation ────────────────────────────────────
@@ -163,7 +162,7 @@ async fn power_loss_simulation() {
         .await;
 
     let config = config_with_upstream(&mock.uri());
-    let (addr, handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, handle) = spawn_gateway(&config_dir, &config).await;
 
     let client = reqwest::Client::new();
     for _ in 0..2 {
@@ -182,7 +181,6 @@ async fn power_loss_simulation() {
 
     // Abrupt kill — no graceful shutdown
     handle.abort();
-    drop(_lock);
 
     // Phase 2: Verify the DB is intact after abrupt termination.
     // The WAL journal ensures the DB is self-consistent even after a crash.
@@ -203,7 +201,7 @@ async fn power_loss_simulation() {
         .unwrap_or(0);
 
     // Phase 3: Restart — the new process should open the existing ledger.db cleanly
-    let (addr2, handle2, _lock2) = spawn_gateway(&config_dir, &config).await;
+    let (addr2, handle2) = spawn_gateway(&config_dir, &config).await;
     let resp = reqwest::get(format!("http://{addr2}/health")).await.unwrap();
     assert_eq!(
         resp.status(),
@@ -212,7 +210,6 @@ async fn power_loss_simulation() {
     );
 
     drop(handle2);
-    drop(_lock2);
 }
 
 // ─── Test 3: downgrade_attempt_rejected ────────────────────────────────
@@ -294,8 +291,7 @@ async fn self_signed_tls_no_unsafe_bypass() {
 
     // Point the gateway at https://self-signed.badssl.com which presents a
     // self-signed certificate. reqwest with default rustls-tls should reject it.
-    let config = format!(
-        r#"
+    let config = r#"
 schema_version = 2
 
 [runtime]
@@ -329,10 +325,9 @@ header_name = "x-api-key"
 [[policies]]
 id = "c9d0e1f2"
 name = "default"
-"#
-    );
+"#;
 
-    let (addr, handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, handle) = spawn_gateway(&config_dir, config).await;
 
     let client = reqwest::Client::new();
     let result = client
@@ -363,7 +358,6 @@ name = "default"
     }
 
     drop(handle);
-    drop(_lock);
 }
 
 // ─── Test 6: upstream_changed_after_setup ──────────────────────────────
@@ -387,7 +381,7 @@ async fn upstream_changed_after_setup() {
         .await;
 
     let config = config_with_upstream(&mock1.uri());
-    let (addr, handle, _lock) = spawn_gateway(&config_dir, &config).await;
+    let (addr, handle) = spawn_gateway(&config_dir, &config).await;
 
     // Verify initial routing works
     let client = reqwest::Client::new();
@@ -445,5 +439,4 @@ async fn upstream_changed_after_setup() {
     assert_eq!(health.status(), 200, "health should still return 200");
 
     drop(handle);
-    drop(_lock);
 }
