@@ -87,14 +87,12 @@ Agents fall into three categories based on integration feasibility:
 
 | Dimension | Assessment |
 |-----------|-----------|
-| **What it does** | Open-source AI coding agent. CLI-based. Multi-model support. Rapid iteration cycle. |
-| **API communication** | HTTP API calls to OpenAI/Anthropic-compatible endpoints. Uses `OPENAI_API_KEY` and `OPENAI_BASE_URL` env vars or config files. |
-| **Integration path** | Same pattern as Hermes: config rewrite + existing Protocol trait. Likely OpenAI `/v1/chat/completions`. |
-| **Engineering effort** | **Low.** Discovery: find OpenClaw config (likely `~/.openclaw/config` or env vars). Protocol: reuses Hermes ChatCompletions adapter. |
-| **Strategic alignment** | **High.** Growing fast. Developer-first. Multi-model. Users benefit directly from Toche's coalescing and cost tracking. |
-| **Community adoption** | Growing rapidly among developers seeking Claude Code alternatives. Active community. |
-| **Maintenance risk** | Medium. Fast iteration cycle means config format may change. Mitigation: config discovery handles multiple paths. |
-| **Verdict** | 🟢 **Build immediately.** Second adapter after Hermes. Proves the adapter pattern works across different agents. |
+| **What it does** | OpenClaw (383K GitHub stars) is itself an AI coding gateway/proxy — it routes to multiple providers and manages API access. |
+| **API communication** | **It IS a gateway.** OpenClaw is architecturally a competitor to Toche, not a client. It manages provider routing, not tool-level AI interactions. |
+| **Integration path** | **None meaningful.** Placing Toche in front of OpenClaw creates a gateway-in-front-of-a-gateway — redundant, adds latency, creates no new value. Placing OpenClaw in front of Toche means Toche becomes a backend, losing its direct client relationships. |
+| **Engineering effort** | **N/A.** This is an architectural mismatch, not an integration challenge. |
+| **Strategic alignment** | **Low.** OpenClaw and Toche compete in the same space (local AI routing). Integration would be competitive, not complementary. |
+| **Verdict** | 🔴 **Reject.** OpenClaw is a gateway, not a client agent. Toche should not add redundant gateway layers. |
 
 ### 3.3 Cursor
 
@@ -111,13 +109,12 @@ Agents fall into three categories based on integration feasibility:
 
 | Dimension | Assessment |
 |-----------|-----------|
-| **What it does** | Open-source AI pair programming tool. CLI-based. Edits files directly. |
-| **API communication** | Direct API calls to OpenAI/Anthropic. Uses `OPENAI_API_BASE` env var. Fully proxyable. |
-| **Integration path** | Env var override: `OPENAI_API_BASE=http://127.0.0.1:8743/v1`. No config file modification needed — just set env in the managed mode. |
-| **Engineering effort** | **Very low.** No config file discovery needed. Just inject `OPENAI_API_BASE` env var in `toche run aider`. |
-| **Strategic alignment** | Medium. Aider users are AI coding tool users — overlap with Toche's audience. But Aider is a single-purpose tool (code editing), not a general agent. |
-| **Community adoption** | Established. Large user base. Mature project. |
-| **Verdict** | 🟡 **Prototype after adapters.** Low effort, but lower strategic overlap. Wait until adapter layer is proven, then add as a quick win. |
+| **What it does** | Open-source AI pair programming tool (47.5K GitHub stars). CLI-based. Edits files directly. Uses LiteLLM for provider abstraction. |
+| **API communication** | Uses LiteLLM → respects `OPENAI_API_BASE` and `ANTHROPIC_BASE_URL` environment variables. Direct HTTP calls via standard OpenAI/Anthropic API formats. Fully proxyable. |
+| **Integration path** | Env var override: `OPENAI_API_BASE=http://127.0.0.1:8743/v1`. No config file modification needed — just inject env var in managed mode. LiteLLM handles provider routing internally; Toche sits between LiteLLM and the actual upstream. |
+| **Engineering effort** | **Very low.** ~1-2 days. No config file discovery needed. No config rewrite needed. Just env var injection in `toche run aider`. Reuses `ChatCompletionsProtocol`. |
+| **Strategic alignment** | Medium. Aider has 47.5K stars — large established user base. AI pair programming users overlap with Toche's target audience. LiteLLM integration means Aider users are already comfortable with proxy/routing tools. |
+| **Verdict** | 🟡 **Build after Hermes.** Very low effort makes this a quick win. Second adapter proves the pattern works across different agent types (Hermes = general agent, Aider = code editing specialist). |
 
 ### 3.5 Gemini CLI (Google)
 
@@ -137,8 +134,8 @@ Agents fall into three categories based on integration feasibility:
 | Agent | HTTP-Proxyable | Configurable URL | Protocol Overlap | Integration Difficulty | Strategic Value | Community | Priority |
 |-------|---------------|-----------------|------------------|----------------------|-----------------|-----------|----------|
 | **Hermes** | ✅ | ✅ `base_url` | OpenAI `/v1/chat` | 🟢 Low | 🔵 Very High | Growing fast | **#1 — Build** |
-| **OpenClaw** | ✅ | ✅ `OPENAI_BASE_URL` | OpenAI `/v1/chat` | 🟢 Low | 🔵 High | Growing | **#2 — Build** |
-| **Aider** | ✅ | ✅ `OPENAI_API_BASE` | OpenAI `/v1/chat` | 🟢 Very Low | 🟡 Medium | Established | **#3 — Prototype** |
+| **OpenClaw** | ⚠️ Architecture mismatch | ⚠️ | N/A — it IS a gateway | 🔴 High (conceptual) | 🔴 Low | Large (383K★) | **Reject** |
+| **Aider** | ✅ | ✅ LiteLLM `OPENAI_API_BASE` | OpenAI `/v1/chat` | 🟢 Very Low | 🟡 Medium | Established (47.5K★) | **#2 — Build** |
 | **Codex CLI** | ✅ | ✅ config file | OpenAI `/v1/responses` | 🟢 Already done | 🟢 Done | Active | Already integrated |
 | **Claude Code** | ✅ | ✅ `ANTHROPIC_BASE_URL` | Anthropic `/v1/messages` | 🟢 Already done | 🟢 Done | Active | Already integrated |
 | **Gemini CLI** | ⚠️ Unknown | ⚠️ Unknown | Google Gemini (custom) | 🔴 High | 🟡 Medium | Early | Defer |
