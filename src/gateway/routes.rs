@@ -129,7 +129,9 @@ pub async fn messages(
     if !resolved.models.is_empty() && !resolved.models.contains_key(&model) {
         error!(
             "Model '{}' not configured for integration '{}'. Allowed: {:?}",
-            model, integration_name, resolved.models.keys().collect::<Vec<_>>()
+            model,
+            integration_name,
+            resolved.models.keys().collect::<Vec<_>>()
         );
         return Err(StatusCode::BAD_REQUEST);
     }

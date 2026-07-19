@@ -2,8 +2,8 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use wiremock::MockServer;
-use wiremock::matchers::{method, path};
 use wiremock::ResponseTemplate;
+use wiremock::matchers::{method, path};
 
 use toche::gateway::server::build_router;
 
@@ -141,12 +141,10 @@ async fn dirty_git_workspace_succeeds() {
     let mock = MockServer::start().await;
     wiremock::Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(
-                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
-                "text/event-stream",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+            "text/event-stream",
+        ))
         .mount(&mock)
         .await;
 
@@ -184,12 +182,10 @@ async fn ledger_locked_traffic_passes() {
     let mock = MockServer::start().await;
     wiremock::Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(
-                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
-                "text/event-stream",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+            "text/event-stream",
+        ))
         .mount(&mock)
         .await;
 
@@ -213,7 +209,10 @@ async fn ledger_locked_traffic_passes() {
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
     let ledger_path = config_dir.join("ledger.db");
-    assert!(ledger_path.exists(), "ledger.db should exist after a request");
+    assert!(
+        ledger_path.exists(),
+        "ledger.db should exist after a request"
+    );
 
     // Lock ledger with an external connection
     let conn = rusqlite::Connection::open(&ledger_path).unwrap();

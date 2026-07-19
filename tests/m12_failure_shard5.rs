@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use wiremock::MockServer;
-use wiremock::matchers::{method, path};
 use wiremock::ResponseTemplate;
+use wiremock::matchers::{method, path};
 
 use toche::gateway::server::build_router;
 
@@ -56,10 +56,7 @@ name = "default"
 async fn spawn_gateway(
     config_dir: &Path,
     config_toml: &str,
-) -> (
-    SocketAddr,
-    tokio::task::JoinHandle<()>,
-) {
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     std::fs::create_dir_all(config_dir).unwrap();
     std::fs::write(config_dir.join("config.toml"), config_toml).unwrap();
 
@@ -122,9 +119,16 @@ async fn unknown_headers_forwarded() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200, "gateway should serve 200 even when upstream sends unknown response headers");
+    assert_eq!(
+        resp.status(),
+        200,
+        "gateway should serve 200 even when upstream sends unknown response headers"
+    );
     let body = resp.text().await.unwrap();
-    assert!(body.contains("message_stop"), "response body should contain expected SSE data");
+    assert!(
+        body.contains("message_stop"),
+        "response body should contain expected SSE data"
+    );
 
     // Health check still works
     let health = reqwest::get(format!("http://{addr}/health")).await.unwrap();
@@ -197,7 +201,10 @@ async fn upstream_rejects_toche_headers() {
         let h = received_headers.lock().unwrap();
         h.iter().any(|n| n.to_lowercase() == "x-toche-bypass")
     };
-    assert!(has_toche_bypass, "upstream should receive x-toche-bypass header");
+    assert!(
+        has_toche_bypass,
+        "upstream should receive x-toche-bypass header"
+    );
 
     // Health check still works after 400 response handling
     let health = reqwest::get(format!("http://{addr}/health")).await.unwrap();
@@ -251,11 +258,16 @@ async fn binary_content_passthrough() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200, "gateway should handle exotic UTF-8 content");
+    assert_eq!(
+        resp.status(),
+        200,
+        "gateway should handle exotic UTF-8 content"
+    );
 
     // Verify the upstream received the exact body content (no corruption in forwarding)
     let fwd = forwarded_body.lock().unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&fwd).expect("forwarded body should be valid JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fwd).expect("forwarded body should be valid JSON");
     let msg_content = parsed["messages"][0]["content"]
         .as_str()
         .expect("content should be a string");
@@ -310,7 +322,8 @@ async fn already_reduced_content() {
     let (addr, handle) = spawn_gateway(&config_dir, &config).await;
 
     // Already minimal content — a single short message with no tool results
-    let body = r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#;
+    let body =
+        r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -322,9 +335,16 @@ async fn already_reduced_content() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200, "reduce pass should not crash on minimal content");
+    assert_eq!(
+        resp.status(),
+        200,
+        "reduce pass should not crash on minimal content"
+    );
     let response_text = resp.text().await.unwrap();
-    assert!(response_text.contains("message_stop"), "response should contain SSE data");
+    assert!(
+        response_text.contains("message_stop"),
+        "response should contain SSE data"
+    );
 
     // The forwarded body should still be valid JSON (reduce didn't corrupt it)
     let fwd = forwarded_body.lock().unwrap();
@@ -354,7 +374,9 @@ async fn multi_claude_concurrent_flights() {
             ResponseTemplate::new(200)
                 .set_delay(Duration::from_millis(400))
                 .set_body_raw(
-                    format!("event: message_stop\ndata: {{\"type\":\"message_stop\",\"call\":{n}}}\n"),
+                    format!(
+                        "event: message_stop\ndata: {{\"type\":\"message_stop\",\"call\":{n}}}\n"
+                    ),
                     "text/event-stream",
                 )
         })
@@ -390,8 +412,16 @@ async fn multi_claude_concurrent_flights() {
     let resp_a = resp_a.unwrap();
     let resp_b = resp_b.unwrap();
 
-    assert_eq!(resp_a.status(), 200, "first concurrent claude request should succeed");
-    assert_eq!(resp_b.status(), 200, "second concurrent claude request should succeed");
+    assert_eq!(
+        resp_a.status(),
+        200,
+        "first concurrent claude request should succeed"
+    );
+    assert_eq!(
+        resp_b.status(),
+        200,
+        "second concurrent claude request should succeed"
+    );
 
     // Coalescing should reduce upstream hits to exactly 1
     let hits = upstream_hits.load(Ordering::SeqCst);
@@ -403,7 +433,10 @@ async fn multi_claude_concurrent_flights() {
     // Both responses should contain the same call number (both coalesced to same upstream call)
     let body_a = resp_a.text().await.unwrap();
     let body_b = resp_b.text().await.unwrap();
-    assert_eq!(body_a, body_b, "coalesced responses should have identical bodies");
+    assert_eq!(
+        body_a, body_b,
+        "coalesced responses should have identical bodies"
+    );
 
     drop(handle);
 }
@@ -462,8 +495,16 @@ async fn multi_codex_concurrent_flights() {
     let resp_a = resp_a.unwrap();
     let resp_b = resp_b.unwrap();
 
-    assert_eq!(resp_a.status(), 200, "first concurrent codex request should succeed");
-    assert_eq!(resp_b.status(), 200, "second concurrent codex request should succeed");
+    assert_eq!(
+        resp_a.status(),
+        200,
+        "first concurrent codex request should succeed"
+    );
+    assert_eq!(
+        resp_b.status(),
+        200,
+        "second concurrent codex request should succeed"
+    );
 
     // /v1/responses has no coalescing — both should be independently forwarded
     let hits = upstream_hits.load(Ordering::SeqCst);
@@ -554,14 +595,26 @@ async fn claude_codex_concurrent_no_cross_protocol_coalesce() {
     let claude_text = claude_resp.text().await.unwrap();
     let codex_text = codex_resp.text().await.unwrap();
 
-    assert!(claude_text.contains("claude"), "claude response should contain protocol marker");
-    assert!(codex_text.contains("codex"), "codex response should contain protocol marker");
+    assert!(
+        claude_text.contains("claude"),
+        "claude response should contain protocol marker"
+    );
+    assert!(
+        codex_text.contains("codex"),
+        "codex response should contain protocol marker"
+    );
 
     // Each protocol hits upstream independently — no cross-protocol coalescing
     let c_hits = claude_hits.load(Ordering::SeqCst);
     let x_hits = codex_hits.load(Ordering::SeqCst);
-    assert_eq!(c_hits, 1, "claude upstream should receive exactly 1 hit, got {c_hits}");
-    assert_eq!(x_hits, 1, "codex upstream should receive exactly 1 hit, got {x_hits}");
+    assert_eq!(
+        c_hits, 1,
+        "claude upstream should receive exactly 1 hit, got {c_hits}"
+    );
+    assert_eq!(
+        x_hits, 1,
+        "codex upstream should receive exactly 1 hit, got {x_hits}"
+    );
 
     // Verify the protocol markers are different (proving no cross-protocol response sharing)
     assert_ne!(

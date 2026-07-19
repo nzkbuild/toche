@@ -2,8 +2,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Mutex;
 use wiremock::MockServer;
-use wiremock::matchers::{method, path};
 use wiremock::ResponseTemplate;
+use wiremock::matchers::{method, path};
 
 use toche::gateway::server::build_router;
 
@@ -54,10 +54,7 @@ name = "default"
 async fn spawn_gateway(
     config_dir: &Path,
     config_toml: &str,
-) -> (
-    SocketAddr,
-    tokio::task::JoinHandle<()>,
-) {
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     std::fs::create_dir_all(config_dir).unwrap();
     std::fs::write(config_dir.join("config.toml"), config_toml).unwrap();
 
@@ -86,12 +83,10 @@ async fn killed_runtime_recovery() {
     let mock = MockServer::start().await;
     wiremock::Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(
-                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
-                "text/event-stream",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+            "text/event-stream",
+        ))
         .mount(&mock)
         .await;
 
@@ -118,7 +113,10 @@ async fn killed_runtime_recovery() {
 
     // Phase 2: Verify ledger.db exists and is valid (no corruption)
     let ledger_path = config_dir.join("ledger.db");
-    assert!(ledger_path.exists(), "ledger.db should exist after first run");
+    assert!(
+        ledger_path.exists(),
+        "ledger.db should exist after first run"
+    );
     {
         let conn = rusqlite::Connection::open(&ledger_path).unwrap();
         let integrity: String = conn
@@ -135,7 +133,9 @@ async fn killed_runtime_recovery() {
 
     // Phase 3: Restart — build_router opens the existing ledger.db and should not fail
     let (addr2, handle2) = spawn_gateway(&config_dir, &config).await;
-    let resp = reqwest::get(format!("http://{addr2}/health")).await.unwrap();
+    let resp = reqwest::get(format!("http://{addr2}/health"))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200, "restarted gateway should serve /health");
 
     drop(handle2);
@@ -152,12 +152,10 @@ async fn power_loss_simulation() {
     let mock = MockServer::start().await;
     wiremock::Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(
-                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
-                "text/event-stream",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+            "text/event-stream",
+        ))
         .mount(&mock)
         .await;
 
@@ -185,7 +183,10 @@ async fn power_loss_simulation() {
     // Phase 2: Verify the DB is intact after abrupt termination.
     // The WAL journal ensures the DB is self-consistent even after a crash.
     let ledger_path = config_dir.join("ledger.db");
-    assert!(ledger_path.exists(), "ledger.db should exist after abrupt kill");
+    assert!(
+        ledger_path.exists(),
+        "ledger.db should exist after abrupt kill"
+    );
 
     let conn = rusqlite::Connection::open(&ledger_path).unwrap();
     let integrity: String = conn
@@ -202,7 +203,9 @@ async fn power_loss_simulation() {
 
     // Phase 3: Restart — the new process should open the existing ledger.db cleanly
     let (addr2, handle2) = spawn_gateway(&config_dir, &config).await;
-    let resp = reqwest::get(format!("http://{addr2}/health")).await.unwrap();
+    let resp = reqwest::get(format!("http://{addr2}/health"))
+        .await
+        .unwrap();
     assert_eq!(
         resp.status(),
         200,
@@ -235,7 +238,10 @@ async fn downgrade_attempt_rejected() {
         Err(e) => {
             // Use alternate format to get the full anyhow error chain
             let msg = format!("{e:#}");
-            assert!(msg.contains("schema_version"), "error chain should mention schema_version, got: {msg}");
+            assert!(
+                msg.contains("schema_version"),
+                "error chain should mention schema_version, got: {msg}"
+            );
             assert!(
                 msg.contains("999"),
                 "error chain should mention version 999, got: {msg}"
@@ -272,9 +278,7 @@ async fn newer_schema_detected() {
                 "error should mention newer DB schema, got: {msg}"
             );
         }
-        Ok(_) => panic!(
-            "expected LedgerDb::open to reject DB with future schema version"
-        ),
+        Ok(_) => panic!("expected LedgerDb::open to reject DB with future schema version"),
     }
 }
 
@@ -371,12 +375,10 @@ async fn upstream_changed_after_setup() {
     let mock1 = MockServer::start().await;
     wiremock::Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(
-                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
-                "text/event-stream",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+            "text/event-stream",
+        ))
         .mount(&mock1)
         .await;
 
@@ -401,12 +403,10 @@ async fn upstream_changed_after_setup() {
     let mock2 = MockServer::start().await;
     wiremock::Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(
-                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
-                "text/event-stream",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+            "text/event-stream",
+        ))
         .mount(&mock2)
         .await;
     std::fs::write(

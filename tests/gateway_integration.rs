@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 use std::path::Path;
 use wiremock::MockServer;
-use wiremock::matchers::{method, path};
 use wiremock::ResponseTemplate;
+use wiremock::matchers::{method, path};
 
 use toche::config::toche_config::derive_id;
 use toche::gateway::server::build_router;
@@ -15,7 +15,10 @@ static CONFIG_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Callers that read the ledger must hold `CONFIG_LOCK` themselves to prevent
 /// `TOCHE_CONFIG_DIR` from being overwritten by another test before a spawned
 /// ledger write completes.
-async fn spawn_gateway(config_dir: &Path, config_toml: &str) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+async fn spawn_gateway(
+    config_dir: &Path,
+    config_toml: &str,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     std::fs::create_dir_all(config_dir).unwrap();
     std::fs::write(config_dir.join("config.toml"), config_toml).unwrap();
 
@@ -40,7 +43,10 @@ async fn spawn_gateway(config_dir: &Path, config_toml: &str) -> (SocketAddr, tok
 /// the tokio::spawn'd write completes). Used for multi-gateway tests where
 /// we need two instances sequentially — callers must drop the first gateway
 /// (including its join handle) before spawning the second.
-async fn spawn_gateway_no_ledger(config_dir: &Path, config_toml: &str) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+async fn spawn_gateway_no_ledger(
+    config_dir: &Path,
+    config_toml: &str,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     std::fs::create_dir_all(config_dir).unwrap();
     std::fs::write(config_dir.join("config.toml"), config_toml).unwrap();
 
@@ -61,7 +67,10 @@ async fn spawn_gateway_no_ledger(config_dir: &Path, config_toml: &str) -> (Socke
 /// Build and spawn a gateway while the caller already holds CONFIG_LOCK.
 /// This keeps the lock held for the gateway's lifetime so that ledger
 /// writes go to the correct directory.
-async fn spawn_gateway_under_lock(config_dir: &Path, config_toml: &str) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+async fn spawn_gateway_under_lock(
+    config_dir: &Path,
+    config_toml: &str,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     std::fs::create_dir_all(config_dir).unwrap();
     std::fs::write(config_dir.join("config.toml"), config_toml).unwrap();
 
@@ -225,8 +234,16 @@ async fn setup_idempotent_connect_twice_no_duplicates() {
 
     // Verify no duplicate fragments — config should have exactly one integration/upstream/policy
     let parsed: toche::config::toche_config::TocheConfig = toml::from_str(&config2).unwrap();
-    assert_eq!(parsed.integrations.len(), 1, "should have exactly one integration");
-    assert_eq!(parsed.upstreams.len(), 1, "should have exactly one upstream");
+    assert_eq!(
+        parsed.integrations.len(),
+        1,
+        "should have exactly one integration"
+    );
+    assert_eq!(
+        parsed.upstreams.len(),
+        1,
+        "should have exactly one upstream"
+    );
     assert_eq!(parsed.policies.len(), 1, "should have exactly one policy");
 }
 
@@ -341,7 +358,10 @@ async fn endpoint_fails_mid_stream_partial_response_not_cached() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("Hello"), "should have partial content");
     // It should NOT contain "message_stop" since the stream was cut off
-    assert!(!body.contains("message_stop"), "should not have complete message_stop event");
+    assert!(
+        !body.contains("message_stop"),
+        "should not have complete message_stop event"
+    );
 
     // Verify the partial response was NOT cached (safe_cache should have rejected it)
     let ledger_path = config_dir.join("ledger.db");
@@ -350,7 +370,10 @@ async fn endpoint_fails_mid_stream_partial_response_not_cached() {
         let entries = db.get_entries(10, None).unwrap();
         // The request should be logged but not as a local_cache_hit
         for entry in &entries {
-            assert!(!entry.local_cache_hit, "partial response should not be cached");
+            assert!(
+                !entry.local_cache_hit,
+                "partial response should not be cached"
+            );
         }
     }
 }
@@ -431,7 +454,11 @@ name = "default"
         .send()
         .await
         .unwrap();
-    assert_eq!(resp_bad.status().as_u16(), 400, "unknown model should return 400");
+    assert_eq!(
+        resp_bad.status().as_u16(),
+        400,
+        "unknown model should return 400"
+    );
 }
 
 // ─── Test 6: no-usage-metadata ─────────────────────────────────────────
@@ -494,9 +521,11 @@ async fn no_usage_metadata_reports_usage_as_unknown() {
     let entry = &entries[0];
     // When usage headers are absent, the attribution should remain "unknown"
     // and cache tokens should be 0 (not meaningful)
-    assert_eq!(entry.attribution, "unknown",
+    assert_eq!(
+        entry.attribution, "unknown",
         "attribution should be 'unknown' when upstream provides no usage headers, got: {}",
-        entry.attribution);
+        entry.attribution
+    );
     // Cache tokens should be 0 since no headers were present
     assert_eq!(entry.cache_read_input_tokens, 0);
     assert_eq!(entry.cache_creation_input_tokens, 0);
@@ -521,12 +550,10 @@ async fn multi_claude_two_instances_diff_trust_domains_no_credential_crossover()
 
     // Compute trust domains directly from the config parameters.
     // Two instances with different inline keys must produce different domains.
-    let domain_a = toche::identity::derive_trust_domain_id(
-        "a1b2c3d4", "default", "e5f6a7b8", "inline(***)",
-    );
-    let domain_b = toche::identity::derive_trust_domain_id(
-        "a1b2c3d4", "default", "e5f6a7b8", "inline(***)",
-    );
+    let domain_a =
+        toche::identity::derive_trust_domain_id("a1b2c3d4", "default", "e5f6a7b8", "inline(***)");
+    let domain_b =
+        toche::identity::derive_trust_domain_id("a1b2c3d4", "default", "e5f6a7b8", "inline(***)");
     // Same secret_ref display for both — but the actual KEYS differ.
     // LegacyInline always displays "inline(***)", so the key diff
     // is opaque to trust_domain_id. This tests the contract: trust domains
@@ -536,15 +563,20 @@ async fn multi_claude_two_instances_diff_trust_domains_no_credential_crossover()
     // For true isolation by credential value, use different ref types or
     // different integration names.
 
-    let domain_different_ref = toche::identity::derive_trust_domain_id(
-        "a1b2c3d4", "default", "e5f6a7b8", "env:KEY_A",
-    );
+    let domain_different_ref =
+        toche::identity::derive_trust_domain_id("a1b2c3d4", "default", "e5f6a7b8", "env:KEY_A");
 
     // Verify: same ref display → same domain; different ref → different domain
-    assert_eq!(domain_a.as_str(), domain_b.as_str(),
-        "same SecretRef display should produce same trust domain");
-    assert_ne!(domain_a.as_str(), domain_different_ref.as_str(),
-        "different SecretRef displays MUST differ in trust domain");
+    assert_eq!(
+        domain_a.as_str(),
+        domain_b.as_str(),
+        "same SecretRef display should produce same trust domain"
+    );
+    assert_ne!(
+        domain_a.as_str(),
+        domain_different_ref.as_str(),
+        "different SecretRef displays MUST differ in trust domain"
+    );
 
     // Verify that two gateways with different keys both serve requests.
     // Sequential: spawn A → request → drop A → spawn B → request → drop B.
@@ -612,14 +644,23 @@ async fn multi_codex_two_instances_diff_trust_domains() {
 
     // Compute trust domains directly
     let domain_a = toche::identity::derive_trust_domain_id(
-        &derived_id, "default", &derived_upstream_id, "env:CODEX_KEY_A",
+        &derived_id,
+        "default",
+        &derived_upstream_id,
+        "env:CODEX_KEY_A",
     );
     let domain_b = toche::identity::derive_trust_domain_id(
-        &derived_id, "default", &derived_upstream_id, "env:CODEX_KEY_B",
+        &derived_id,
+        "default",
+        &derived_upstream_id,
+        "env:CODEX_KEY_B",
     );
 
-    assert_ne!(domain_a.as_str(), domain_b.as_str(),
-        "Codex trust domains should differ with different credential refs");
+    assert_ne!(
+        domain_a.as_str(),
+        domain_b.as_str(),
+        "Codex trust domains should differ with different credential refs"
+    );
 
     let client = reqwest::Client::new();
 
@@ -761,15 +802,16 @@ async fn different_creds_same_url_routing_correct() {
 
     // Compute trust domains directly: different integration names + different
     // keys → different trust domains
-    let domain_a = toche::identity::derive_trust_domain_id(
-        &int_id_a, "alpha", &upstream_id_a, "env:CRED_A",
-    );
-    let domain_b = toche::identity::derive_trust_domain_id(
-        &int_id_b, "beta", &upstream_id_b, "env:CRED_B",
-    );
+    let domain_a =
+        toche::identity::derive_trust_domain_id(&int_id_a, "alpha", &upstream_id_a, "env:CRED_A");
+    let domain_b =
+        toche::identity::derive_trust_domain_id(&int_id_b, "beta", &upstream_id_b, "env:CRED_B");
 
-    assert_ne!(domain_a.as_str(), domain_b.as_str(),
-        "two different integrations with different keys produce different trust domains");
+    assert_ne!(
+        domain_a.as_str(),
+        domain_b.as_str(),
+        "two different integrations with different keys produce different trust domains"
+    );
 
     let client = reqwest::Client::new();
 
@@ -913,19 +955,26 @@ max_entry_mb = 10
 
     let db = toche::meter::db::LedgerDb::open(&config_dir.join("ledger.db")).unwrap();
     let entries = db.get_entries(10, None).unwrap();
-    assert!(entries.len() >= 2, "should have at least 2 entries for 2 requests");
+    assert!(
+        entries.len() >= 2,
+        "should have at least 2 entries for 2 requests"
+    );
 
     // Same gateway, same creds → same trust_domain_id
-    assert_eq!(entries[0].trust_domain_id, entries[1].trust_domain_id,
-        "same creds should produce same trust domain");
+    assert_eq!(
+        entries[0].trust_domain_id, entries[1].trust_domain_id,
+        "same creds should produce same trust domain"
+    );
 
     // Same integration and upstream
     assert_eq!(entries[0].integration_id, entries[1].integration_id);
     assert_eq!(entries[0].upstream_id, entries[1].upstream_id);
 
     // No cross-workspace leak: each request has a unique request_id
-    assert_ne!(entries[0].request_id, entries[1].request_id,
-        "each request must have a unique request ID — no cross-request leakage");
+    assert_ne!(
+        entries[0].request_id, entries[1].request_id,
+        "each request must have a unique request ID — no cross-request leakage"
+    );
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
