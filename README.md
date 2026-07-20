@@ -2,67 +2,11 @@
   <img src="assets/branding/toche-wordmark.png" alt="Toche" width="620">
 </p>
 
-<p align="center">
-  <strong>One local runtime. Multiple AI clients. Every request leaves a receipt.</strong>
-</p>
+# Make local AI coding work less repetitive
 
-<p align="center">
-  Toche is a local multi-client gateway that sits between your AI coding tools and
-  their upstream API endpoints. It removes avoidable work, isolates trust boundaries,
-  and keeps every optimization visible and reversible.
-</p>
+Toche is a local efficiency runtime for Claude Code and Codex. It sits between those coding clients and your existing API providers, then removes duplicate work, reduces noisy tool output, reuses eligible responses, and records every result locally.
 
-<p align="center">
-  <img src="assets/branding/toche-status.svg" alt="Toche 1.1.0: Multi-client runtime, Claude Code and Codex, 65 filters, duplicate requests coalesced from many to one, zero hosted accounts" width="820">
-</p>
-
-<p align="center">
-  <a href="#what-toche-is">What Toche is</a> ·
-  <a href="#what-toche-is-not">What it is not</a> ·
-  <a href="#install">Install</a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="#supported-clients">Supported clients</a> ·
-  <a href="#command-reference">Commands</a> ·
-  <a href="#trust-and-isolation">Trust and isolation</a> ·
-  <a href="#documentation">Docs</a>
-</p>
-
-## What Toche is
-
-Toche is a local runtime that accepts connections from multiple AI coding clients
-simultaneously and routes their requests to your configured upstream API endpoints.
-While a request passes through, Toche can:
-
-- **Coalesce identical in-flight requests** so N clients sharing the same upstream
-  and trust domain make one upstream call instead of N.
-- **Replay eligible responses** from a persistent cross-session cache when the
-  workspace fingerprint matches.
-- **Reduce known tool-output noise** with 65 built-in TOML-defined filters
-  while keeping the original content recoverable with `toche expand`.
-- **Inject provider prompt-cache breakpoints** to maximize Anthropic cache hits.
-- **Record every request** in a local SQLite ledger so `toche stats` can explain
-  what happened.
-
-Toche does not host an account, send telemetry, or require a cloud service.
-
-## What Toche is not
-
-Toche is not a provider account manager, a model load balancer, a protocol
-translator, or a hosted API gateway. It does not select providers automatically
-or fall back between them. It does not translate between Anthropic and OpenAI
-protocols. These are explicit non-goals for the 1.1.0 release.
-
-## Install
-
-### Prerequisites
-
-- Node.js 18 or newer for the npm installer.
-- At least one supported AI coding client already installed and working.
-- Windows x64, Linux x64, macOS Intel, or macOS Apple silicon.
-
-Rust is not required when installing from npm.
-
-### One-time setup
+**1 local runtime · 2 supported clients · 2 supported API protocols · 65 built-in output filters · eligible identical in-flight requests: N upstream calls to 1 · 0 hosted accounts · no telemetry**
 
 ```shell
 npm install -g @nzkbuild/toche
@@ -70,49 +14,76 @@ toche setup
 toche
 ```
 
-Then, in other terminals, run your clients normally:
+Then run `claude` or `codex` in another terminal.
+
+<p align="center">
+  <img src="assets/branding/toche-status.svg" alt="Toche: 1 local runtime, 2 clients, 2 protocols, 65 filters, eligible duplicates reduced from N calls to 1, 0 hosted accounts" width="920">
+</p>
+
+<p align="center">
+  <a href="#why-use-toche">Why use Toche</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#use-cases">Use cases</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#supported-clients">Supported clients</a> ·
+  <a href="#trust-and-measurement">Trust and measurement</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="#technical-documentation">Technical documentation</a>
+</p>
+
+## Why use Toche
+
+Coding agents often repeat requests, return large tool outputs, and spread usage records across separate client sessions. Toche gives supported clients one local runtime that can share eligible in-flight work, filter known noisy output, reuse eligible local responses, and keep a local ledger of what happened.
+
+| Without Toche | With Toche |
+|---|---|
+| Each client sends its own matching request upstream. | Eligible identical in-flight requests in the same trust domain are coalesced from N upstream calls to 1. |
+| Long tool output reaches the client unchanged. | 65 built-in filters can reduce supported noisy output. Original content remains locally recoverable with `toche expand`. |
+| Claude Code and Codex usage is separate. | One local SQLite ledger records requests from both supported clients. |
+| A repeated eligible response requires another upstream call. | The safe cache can replay eligible text-only responses when the workspace fingerprint matches. |
+| Client configuration and upstream behavior are harder to inspect together. | `toche status`, `toche stats`, and `toche cache why` expose local runtime decisions. |
+
+Toche is not a normal proxy. It does not choose providers, manage provider accounts, translate one protocol into another, load balance traffic, or support every AI client. It preserves the request protocol used by each supported client and forwards remaining work to the upstream API endpoint you configure.
+
+## Install
+
+### Prerequisites
+
+- Node.js 18 or newer for the npm installer
+- Claude Code or Codex already installed and working
+- Windows x64, Linux x64, macOS Intel, or macOS Apple silicon
+
+Rust is not required when installing from npm.
+
+### Start the local runtime
+
+```shell
+npm install -g @nzkbuild/toche
+toche setup
+toche
+```
+
+In another terminal, run a supported client normally:
 
 ```shell
 claude
 codex
 ```
 
-`toche setup` detects your existing client configurations, imports your current
-upstreams, and writes a local `config.toml`. It never silently sends a paid model
-request. You can run it again later to review or modify your configuration.
+`toche setup` detects supported client configurations, imports your current upstream settings, and writes a local `config.toml`. You can run it again later to review or change the local configuration.
 
-### Managed mode (optional convenience)
+### Managed mode
 
-Instead of starting the runtime separately, you can launch a client through Toche
-in one step:
+Managed mode starts Toche and one client together:
 
 ```shell
 toche run claude -- --dangerously-skip-permissions
 toche run codex
 ```
 
-Managed mode uses the same runtime, configuration, protocol handling, trust
-isolation, ledger, and optimization pipeline as persistent mode.
+### Build from source
 
-### Normal daily use
-
-After setup, the routine is:
-
-1. Run `toche` and leave it open.
-2. Run your clients in other terminals.
-
-### Clean uninstall
-
-```shell
-toche disconnect claude
-toche disconnect codex
-npm uninstall -g @nzkbuild/toche
-```
-
-<details>
-<summary><strong>Build from source instead of npm</strong></summary>
-
-You need Rust 1.86 or newer.
+Rust 1.86 or newer is required.
 
 ```shell
 git clone https://github.com/nzkbuild/toche.git
@@ -122,7 +93,31 @@ cargo build --release
 
 The binary is `target/release/toche` (`.exe` on Windows).
 
-</details>
+## Use cases
+
+### Multiple simultaneous coding agents
+
+Run Claude Code and Codex at the same time through one local runtime. Eligible identical non-streaming Anthropic Messages requests in the same trust domain share one upstream call while waiters receive the captured result.
+
+### Long-running and cross-session work
+
+The local ledger records routed requests. The safe cache can reuse eligible text-only responses across sessions when the project and workspace fingerprint match.
+
+### Tool-output reduction
+
+Toche applies 65 built-in TOML-defined filters to supported tool output. The reduced result reaches the client while the original stays locally recoverable through `toche expand <hash>`.
+
+### Unified Claude Code and Codex usage visibility
+
+`toche stats` and `toche status` read one local ledger for both supported clients. Measurement confidence labels distinguish observed, provider-reported, estimated, configured, and unknown values.
+
+### Existing Anthropic Messages and OpenAI Responses compatible providers
+
+Configure existing upstream endpoints that speak either supported protocol. Toche handles Anthropic Messages for Claude Code and OpenAI Responses for Codex without translating between protocols.
+
+### Local and privacy-conscious workflows
+
+Toche runs on `127.0.0.1:8743`, uses local files under `~/.toche/`, requires 0 hosted accounts, and sends no telemetry.
 
 ## How it works
 
@@ -130,152 +125,93 @@ The binary is `target/release/toche` (`.exe` on Windows).
 flowchart LR
     subgraph Clients
         A[Claude Code]
-        B[Codex CLI]
+        B[Codex]
     end
     A --> C[Toche on 127.0.0.1:8743]
     B --> C
-    C --> D{Protocol router}
-    D --> E[Anthropic Messages pipeline]
-    D --> F[OpenAI Responses pipeline]
-    E --> G[Shield coalescing]
-    F --> G
-    G --> H[Safe cache]
-    H --> I[Output reduction]
-    I --> J[Efficiency injection]
-    J --> K[Prompt cache injection]
-    K --> L[Configured upstream APIs]
-    L --> C
-    C --> M[Local ledger and CAS]
-    C --> A
-    C --> B
+    C --> D[Anthropic Messages handling]
+    C --> E[OpenAI Responses handling]
+    D --> F[Coalescing, safe cache, output reduction]
+    E --> G[Pass-through request handling]
+    F --> H[Configured upstream endpoint]
+    G --> H
+    H --> C
+    C --> I[Local SQLite ledger and content store]
 ```
 
-In plain language, your AI clients send their normal API requests to Toche on
-`127.0.0.1:8743`. Toche then:
+For an Anthropic Messages request, Toche:
 
-1. Routes the request through the correct protocol driver (Anthropic Messages
-   or OpenAI Responses).
-2. Gives the request a stable fingerprint.
-3. Shares an already-running identical request (within the same trust domain)
-   or checks for an eligible local replay.
-4. Shortens supported tool output and keeps the original locally recoverable.
-5. Applies the selected efficiency and provider prompt-cache policy.
-6. Forwards any remaining work to your configured upstream API endpoint.
-7. Records the outcome locally so `toche stats` can explain it.
+1. Identifies the configured integration and trust domain.
+2. Computes a request fingerprint.
+3. Coalesces an eligible matching in-flight request or checks the local safe cache.
+4. Reduces supported tool output and retains the original locally.
+5. Applies configured efficiency and provider prompt-cache policies.
+6. Forwards remaining work to the configured upstream endpoint.
+7. Records the outcome in the local ledger.
 
-The internal pipeline order is:
-
-```text
-protocol dispatch → fingerprint → shield → safe cache → reduce → efficiency → cache → forward → ledger
-```
+OpenAI Responses requests are forwarded through their own supported protocol path and recorded in the same local ledger. They are not translated into Anthropic Messages requests.
 
 ## Supported clients
 
-| Client | Protocol | Persistent mode | Managed mode | Setup |
-|--------|----------|-----------------|--------------|-------|
-| Claude Code | Anthropic Messages | `toche` + `claude` | `toche run claude` | `toche setup` |
-| Codex CLI | OpenAI Responses | `toche` + `codex` | `toche run codex` | `toche setup` |
+| Client | API protocol | Persistent mode | Managed mode |
+|---|---|---|---|
+| Claude Code | Anthropic Messages | `toche` then `claude` | `toche run claude` |
+| Codex | OpenAI Responses | `toche` then `codex` | `toche run codex` |
 
-Multiple instances of the same client are supported. Claude Code and Codex can
-run simultaneously through the same Toche runtime.
+Multiple instances of either supported client can use the same Toche runtime.
 
-### Persistent vs. managed mode
+## Trust and measurement
 
-**Persistent mode** (`toche` in one terminal, client in another) is the primary
-workflow. Start Toche once and launch as many clients as you need.
+### Trust isolation
 
-**Managed mode** (`toche run <client>`) is a convenience that starts Toche and
-the client together. It uses the exact same pipeline as persistent mode.
+Different credential references do not share cache entries or in-flight coalescing. Toche derives a trust domain from integration, upstream, and credential-reference identity. Raw credential values are not placed in logs, IDs, hashes, database diagnostics, or receipts.
 
-## Trust and isolation
+### Local data
 
-Different credential references never share cache entries or in-flight request
-coalescing. If you configure a personal Anthropic API key and a work OpenAI key,
-their traffic is isolated by trust domain — even if they happen to target the
-same upstream URL.
-
-Trust domains are derived from the combination of integration identity, upstream
-identity, and credential reference. Raw credential values are never placed in
-logs, IDs, hashes, database diagnostics, or receipts.
-
-Attribution confidence is recorded honestly: Toche distinguishes between exact
-process identity, client-reported identity, workspace-level identity, inference,
-and unknown identity. It does not fabricate identity where it cannot be observed.
-
-## Data storage
-
-Everything lives in `~/.toche/` (overridable with `TOCHE_CONFIG_DIR`):
+Everything lives in `~/.toche/` unless `TOCHE_CONFIG_DIR` overrides it.
 
 | Path | Purpose |
-|------|---------|
-| `config.toml` | Runtime configuration, integrations, upstreams, policies |
-| `ledger.db` | SQLite ledger of every routed request |
-| `cas/` | Content-addressed storage for reduced originals and cached responses |
-| `runtime_id` | Persistent UUIDv7 runtime identity |
+|---|---|
+| `config.toml` | Runtime configuration, integrations, upstreams, and policies |
+| `ledger.db` | SQLite ledger of routed requests |
+| `cas/` | Original reduced output and eligible cached responses |
+| `runtime_id` | Persistent runtime identity |
 
-Toche never sends your data to a cloud account.
-
-## Measurement confidence
-
-Every value reported by `toche stats` is classified by how it was obtained:
+### Measurement confidence
 
 | Confidence | Meaning |
-|------------|---------|
-| `measured` | Toche observed it directly |
-| `provider-reported` | The upstream API reported it |
-| `estimated` | Derived from available data (e.g. list-price estimate) |
-| `configured` | Comes from your configuration |
-| `unknown` | Could not be determined |
+|---|---|
+| `measured` | Toche observed the value directly |
+| `provider-reported` | The upstream API returned the value |
+| `estimated` | Toche derived the value from available data |
+| `configured` | The value came from local configuration |
+| `unknown` | The value could not be determined |
 
-Missing prices do not become zero. Missing usage does not become fabricated
-usage. Cost estimates are labelled as equivalent public list-price estimates,
-not your actual billed cost.
+Missing prices do not become zero. Missing usage does not become fabricated usage.
 
-## Command reference
-
-### Primary commands
+## Commands
 
 | Command | What it does |
-|---------|-------------|
-| `toche` | Start the runtime on `127.0.0.1:8743` |
-| `toche setup` | Guided, rerunnable configuration |
-| `toche setup --dry-run` | Preview changes without writing |
-| `toche setup --force` | Regenerate configuration (backup created) |
-| `toche connect [client]` | Route a client through Toche |
-| `toche disconnect [client]` | Restore direct upstream routing |
-| `toche run <client>` | Run a client in managed mode |
-| `toche doctor` | Verify installation and configuration |
-| `toche status` | Show runtime status, active flights, protocol counts |
-| `toche status --json` | Machine-readable status |
-| `toche stats` | Show usage, tokens, and cost estimates |
-| `toche stats --json` | Machine-readable statistics |
-| `toche stats --protocol anthropic` | Filter by protocol |
-| `toche stats --integration <name>` | Filter by integration |
-| `toche expand <hash>` | Restore original tool output from a reduction hash |
-
-### Advanced commands
-
-| Command | What it does |
-|---------|-------------|
-| `toche cache inspect` | List persistent safe-cache entries |
-| `toche cache clear` | Clear entries for the current project |
-| `toche cache clear --all` | Clear all persistent cache entries |
-| `toche cache why <fingerprint>` | Explain the cache decision for a fingerprint |
-| `toche checkpoint save` | Save a session checkpoint |
-| `toche checkpoint list` | List saved checkpoints |
-| `toche checkpoint show` | Show the latest checkpoint |
-| `toche checkpoint delete <id>` | Delete a checkpoint |
-| `toche graph query <question>` | Query the optional knowledge graph |
-| `toche graph status` | Show graph node and edge counts |
-| `toche graph extract` | Rebuild the knowledge graph |
+|---|---|
+| `toche` | Start the local runtime on `127.0.0.1:8743` |
+| `toche setup` | Create or update local configuration |
+| `toche connect [client]` | Configure a supported client to use Toche |
+| `toche disconnect [client]` | Restore direct upstream configuration |
+| `toche run <client>` | Start Toche and a supported client together |
+| `toche doctor` | Check installation and configuration |
+| `toche status` | Show runtime state, active flights, and protocol counts |
+| `toche stats` | Show local usage, tokens, and cost estimates |
+| `toche cache inspect` | List local safe-cache entries |
+| `toche cache why <fingerprint>` | Explain a cache decision |
+| `toche expand <hash>` | Recover original tool output from a reduction hash |
+| `toche checkpoint save` | Save a local session checkpoint |
 
 ### Per-request bypass headers
 
-Set a header to `true` (case-insensitive) to skip a stage for one request.
-The umbrella bypass takes precedence over individual bypasses.
+Set a header to `true` to skip a stage for one request.
 
 | Header | Skips |
-|--------|-------|
+|---|---|
 | `x-toche-bypass` | The complete optimization pipeline |
 | `x-toche-bypass-shield` | Request coalescing |
 | `x-toche-bypass-safe-cache` | Persistent cache lookup and storage |
@@ -285,8 +221,7 @@ The umbrella bypass takes precedence over individual bypasses.
 
 ## Configuration
 
-Toche stores its configuration in `~/.toche/config.toml`. Running `toche setup`
-generates it from your existing client configurations.
+Toche stores configuration in `~/.toche/config.toml`. `toche setup` builds it from detected supported-client configuration.
 
 <details>
 <summary><strong>Example config.toml</strong></summary>
@@ -324,16 +259,8 @@ anthropic-version = "2023-06-01"
 id = "pol11111"
 name = "default"
 
-[policies.cache]
-enabled = true
-mode = "auto"
-breakpoint = "standard"
-
 [policies.reduce]
 enabled = true
-
-[policies.efficiency]
-mode = "concise"
 
 [policies.safe_cache]
 enabled = true
@@ -343,78 +270,21 @@ max_entry_bytes = 1048576
 
 </details>
 
+## Technical documentation
+
+- [Architecture](docs/ARCHITECTURE.md): system design, crate map, data flow, and decisions
+- [Changelog](CHANGELOG.md): release history through 1.1.1
+- [Contributing](CONTRIBUTING.md): setup, conventions, and PR workflow
+- [Bug tracker](docs/BUG_TRACKER.md): documented dogfooding findings
+- [npm publishing](docs/NPM_PUBLISHING.md): maintainer checklist
+- [Third-party notices](THIRD_PARTY_NOTICES.md): attribution and reused ideas
+
 ## Troubleshooting
 
-<details>
-<summary><strong>The runtime will not start</strong></summary>
-
-- Check that nothing else is listening on port 8743.
-- Run `toche doctor` to verify that `config.toml` exists and is valid.
-- Enable debug logging with `RUST_LOG=toche=debug toche`.
-
-</details>
-
-<details>
-<summary><strong>A client cannot connect</strong></summary>
-
-- Start the runtime before running `toche connect`.
-- Run `toche doctor` in a second terminal after connecting.
-- Check that `toche status` shows the expected integrations.
-
-</details>
-
-<details>
-<summary><strong>Stats or cache entries are empty</strong></summary>
-
-- The ledger records only requests routed through the runtime.
-- The persistent cache stores only eligible text-only responses without `tool_use` blocks.
-- Use `toche cache why <fingerprint>` to inspect a cache rejection.
-
-</details>
-
-<details>
-<summary><strong>Routing still points to Toche after disconnecting</strong></summary>
-
-Run `toche doctor`. If environment variables or settings still reference Toche
-while the runtime is stopped, run `toche disconnect` for each affected client.
-
-</details>
-
-## Upgrading from 1.0.x
-
-Toche 1.1.0 migrates your existing `profiles.toml` to the new `config.toml`
-format automatically on first load. The migration:
-
-- Converts each profile into separate Integration, Upstream, and Policy entries.
-- Backs up `profiles.toml` to `profiles.toml.v1.bak`.
-- Preserves your ledger, safe-cache metadata, CAS, checkpoints, and Graphify data.
-- Is idempotent — running it again is a no-op.
-- Fails safely on malformed configuration without modifying anything.
-
-An older binary encountering a newer schema version will refuse to modify it.
-
-## Requirements
-
-- Rust 1.86 or newer (edition 2024) when building from source
-- At least one supported AI coding client
-- No hosted Toche service
-- SQLite is bundled through `rusqlite`
-
-## Documentation
-
-- [Architecture](docs/ARCHITECTURE.md): system design, crate map, data flow, decision records
-- [Changelog](CHANGELOG.md): release history from 1.0.0 through 1.1.0
-- [Contributing](CONTRIBUTING.md): setup, conventions, and PR workflow
-- [Code of Conduct](CODE_OF_CONDUCT.md): Contributor Covenant
-- [Bug tracker](docs/BUG_TRACKER.md): issues found and fixed during dogfooding
-- [npm publishing](docs/NPM_PUBLISHING.md): maintainer checklist for npm releases
-- [Third-party notices](THIRD_PARTY_NOTICES.md): reused ideas, integration decisions, and attribution
-
-## Built from good work
-
-Toche's Rust implementation was informed by ideas and patterns from ccusage, RTK,
-Graphify, andrej-karpathy-skills, and caveman-claude. Their licenses and attribution
-are preserved in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- Run `toche doctor` to check local configuration and supported client connections.
+- Run `toche status` to inspect the runtime.
+- Use `toche cache why <fingerprint>` when an eligible response was not reused.
+- Run `toche disconnect claude` or `toche disconnect codex` to restore direct client configuration.
 
 ## License
 
