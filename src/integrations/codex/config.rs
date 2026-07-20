@@ -345,6 +345,57 @@ openai_base_url = "https://api.openai.com/v1"
     }
 
     #[test]
+    fn independent_apply_remove_operations_keep_codex_backups_isolated() {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut workers = Vec::new();
+
+        for (marker, tier) in [("alpha", "fast"), ("beta", "slow")] {
+            let barrier = std::sync::Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                let dir = tempfile::tempdir().unwrap();
+                let config_path = dir.path().join("config.toml");
+                let original = format!(
+                    "service_tier = \"{tier}\"\nmarker = \"{marker}\"\nopenai_base_url = \"https://api.openai.com/v1\"\n"
+                );
+                std::fs::write(&config_path, &original).unwrap();
+
+                barrier.wait();
+                apply_owned_fragment(
+                    &config_path,
+                    &OwnedFragment::default_toche().openai_base_url,
+                )
+                .unwrap();
+
+                let backup_path = backup_path_for(&config_path);
+                let backup = std::fs::read_to_string(&backup_path).unwrap();
+                assert_eq!(backup, original);
+
+                let connected = std::fs::read_to_string(&config_path).unwrap();
+                assert!(connected.contains("127.0.0.1:8743"));
+                assert!(connected.contains(&format!("marker = \"{marker}\"")));
+                assert!(connected.contains(&format!("service_tier = \"{tier}\"")));
+
+                remove_owned_fragment(&config_path).unwrap();
+                let restored: toml::Value = std::fs::read_to_string(&config_path)
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert_eq!(restored["marker"].as_str(), Some(marker));
+                assert_eq!(restored["service_tier"].as_str(), Some(tier));
+                assert_eq!(
+                    restored["openai_base_url"].as_str(),
+                    Some("https://api.openai.com/v1")
+                );
+                assert!(!backup_path.exists());
+            }));
+        }
+
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
     fn test_disconnect_not_connected_is_noop() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
