@@ -121,14 +121,6 @@ impl CoalesceStore {
     }
 }
 
-/// Global singleton coalescing store.
-use std::sync::LazyLock;
-static STORE: LazyLock<CoalesceStore> = LazyLock::new(CoalesceStore::new);
-
-pub fn store() -> &'static CoalesceStore {
-    &STORE
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
