@@ -1,7 +1,7 @@
 {
   "name": "@nzkbuild/toche",
   "version": "1.1.1",
-  "description": "Local efficiency gateway for Claude Code",
+  "description": "Local efficiency runtime for Claude Code and Codex",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -13,8 +13,11 @@
   },
   "keywords": [
     "claude-code",
-    "anthropic",
-    "context",
+    "codex",
+    "anthropic-messages",
+    "openai-responses",
+    "local-ai",
+    "tool-output",
     "cache",
     "cli",
     "rust"
