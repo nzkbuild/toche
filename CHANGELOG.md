@@ -2,6 +2,42 @@
 
 All notable changes to Toche are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **Config directory race in background tasks.** Fire-and-forget `tokio::spawn`
+  tasks in request handlers could read a different test's `TOCHE_CONFIG_DIR` at
+  task-execution time. The config directory is now captured in `AppState` when the
+  router is built and used by asynchronous work.
+
+- **npm installer test fixture.** The `releaseAsset` test now derives expected
+  archive names from the version in `package.json`, keeping the fixture synchronized
+  with the package version.
+
+- **CHANGELOG typo.** "All exiting 1.0.x configurations" corrected to "All
+  existing 1.0.x configurations".
+
+## [1.1.1] — 2026-07-20
+
+### Fixed
+
+- **Shared schema version mismatch.** The `LedgerDb`, `CacheDb`, and `CheckpointDb`
+  modules share a single SQLite database but maintained independent expected schema
+  versions. The ledger wrote version 11 while the cache and checkpoint modules
+  expected version 9, causing `CacheDb::open` and `CheckpointDb::open` to reject a
+  valid database with a misleading "newer version" error. All three modules now
+  expect version 11, and table creation in `CacheDb` and `CheckpointDb` is
+  unconditional (`CREATE TABLE IF NOT EXISTS` without a version gate) so a fresh
+  database initializes correctly regardless of insertion order.
+
+### Added
+
+- **`m24_schema_version_sync` test suite** (5 tests) that verifies:
+  - `CheckpointDb` and `CacheDb` open after a simulated ledger writes version 11.
+  - Both modules reject a database whose schema version exceeds 11.
+  - Both modules open correctly with no prior `schema_version` table.
+
 ## [1.1.0] — 2026-07-20
 
 ### Added
@@ -78,7 +114,7 @@ safe multi-client AI workload runtime. One local Toche instance can now serve
 Claude Code and Codex CLI simultaneously, with trust-domain isolation preventing
 cross-client cache or flight sharing. The configuration schema, protocol-driver
 architecture, and rerunnable setup engine establish the foundation for future
-client and protocol support. All exiting 1.0.x configurations migrate
+client and protocol support. All existing 1.0.x configurations migrate
 automatically and the persistent two-terminal workflow remains first-class.
 
 ## [1.0.10] - 2026-07-17

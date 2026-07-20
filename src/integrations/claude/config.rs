@@ -1,7 +1,7 @@
 use anyhow::Context;
 
 use crate::integrations::{
-    ConnectOutcome, DisconnectOutcome, OwnedFragment, apply_owned_fragment, claude_backup_path,
+    ConnectOutcome, DisconnectOutcome, OwnedFragment, apply_owned_fragment, backup_path_for,
     claude_settings_path, points_to_toche, remove_owned_fragment,
 };
 
@@ -27,7 +27,7 @@ pub fn connect() -> anyhow::Result<ConnectOutcome> {
         return Ok(ConnectOutcome::AlreadyConnected);
     }
 
-    let backup_path = claude_backup_path();
+    let backup_path = backup_path_for(&settings_path);
     Ok(ConnectOutcome::Connected {
         settings_path: settings_path.display().to_string(),
         backup_path: if backup_path.exists() {

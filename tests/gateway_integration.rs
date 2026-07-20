@@ -173,6 +173,63 @@ async fn runtime_before_setup_status_returns_active_zero() {
     assert!(body.get("runtime_id").and_then(|v| v.as_str()).is_some());
 }
 
+#[tokio::test]
+async fn independent_runtimes_do_not_report_each_others_active_flights() {
+    let upstream = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(400))
+                .set_body_raw("{\"content\":[]}", "application/json"),
+        )
+        .mount(&upstream)
+        .await;
+
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let (addr_a, handle_a) = spawn_gateway(
+        &dir_a.path().join("toche"),
+        &config_with_upstream(&upstream.uri()),
+    )
+    .await;
+    let (addr_b, handle_b) =
+        spawn_gateway(&dir_b.path().join("toche"), config_without_integration()).await;
+
+    let request_a = tokio::spawn(async move {
+        reqwest::Client::new()
+            .post(format!("http://{addr_a}/v1/messages"))
+            .header("content-type", "application/json")
+            .header("x-api-key", "test-key")
+            .body(r#"{"model":"claude-sonnet-5","max_tokens":10,"messages":[{"role":"user","content":"Hi"}]}"#)
+            .send()
+            .await
+            .unwrap()
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let status_a: serde_json::Value = reqwest::get(format!("http://{addr_a}/status"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status_a["active_flights"], 1);
+
+    let status_b: serde_json::Value = reqwest::get(format!("http://{addr_b}/status"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status_b["active_flights"], 0);
+
+    assert_eq!(request_a.await.unwrap().status(), 200);
+    handle_a.abort();
+    handle_b.abort();
+}
+
 // ─── Test 2: setup-idempotent ──────────────────────────────────────────
 
 #[tokio::test]

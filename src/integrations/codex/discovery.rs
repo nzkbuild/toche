@@ -69,11 +69,6 @@ pub fn codex_config_path() -> std::path::PathBuf {
     codex_home().join("config.toml")
 }
 
-/// Resolve the backup path for Codex config.toml.
-pub fn codex_backup_path() -> std::path::PathBuf {
-    codex_home().join("config.toml.toche-backup")
-}
-
 /// Public re-export for use by the config module.
 pub fn codex_upstream_url_from_toml_public(content: &str) -> Option<String> {
     codex_upstream_url_from_toml(content)
