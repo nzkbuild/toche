@@ -1,7 +1,7 @@
 {
   "name": "@nzkbuild/toche",
   "version": "1.1.1",
-  "description": "Local efficiency gateway for Claude Code",
+  "description": "Observable local multi-client runtime for Claude Code, Codex, and AI coding requests",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -12,10 +12,15 @@
     "url": "https://github.com/nzkbuild/toche/issues"
   },
   "keywords": [
+    "ai-coding",
     "claude-code",
+    "codex",
     "anthropic",
-    "context",
+    "openai",
+    "gateway",
     "cache",
+    "request-deduplication",
+    "observability",
     "cli",
     "rust"
   ],
