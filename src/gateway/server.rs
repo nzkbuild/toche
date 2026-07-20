@@ -18,6 +18,12 @@ pub struct AppState {
     pub config_port: u16,
     pub request_timeout_ms: u64,
     pub default_integration: Option<ResolvedIntegration>,
+    /// Absolute path to the Toche config directory, captured at build time
+    /// so that background tasks don't read a stale TOCHE_CONFIG_DIR env var.
+    pub config_dir: std::path::PathBuf,
+    /// In-flight request coalescing belongs to this runtime only. Separate
+    /// routers must not share active-flight state or coalesced responses.
+    pub coalesce_store: Arc<shield::coalesce::CoalesceStore>,
 }
 
 /// Build the application router with full middleware stack.
@@ -50,6 +56,8 @@ pub fn build_router(config_dir_override: Option<PathBuf>) -> anyhow::Result<Rout
         config_port: port,
         request_timeout_ms,
         default_integration,
+        config_dir: dir.clone(),
+        coalesce_store: Arc::new(shield::coalesce::CoalesceStore::new()),
     });
 
     Ok(Router::new()
@@ -122,7 +130,7 @@ async fn ready() -> axum::response::Json<serde_json::Value> {
 async fn runtime_status(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::response::Json<serde_json::Value> {
-    let flights = shield::coalesce::store().active_flights();
+    let flights = state.coalesce_store.active_flights();
 
     let mut flight_entries: Vec<serde_json::Value> = Vec::new();
     let mut protocol_counts: std::collections::HashMap<String, u64> =
@@ -144,7 +152,7 @@ async fn runtime_status(
     }
 
     // Count by protocol from ledger
-    let db_path = config_dir().join("ledger.db");
+    let db_path = state.config_dir.join("ledger.db");
     if let Ok(db) = crate::meter::db::LedgerDb::open(&db_path) {
         if let Ok(entries) = db.get_entries(1000, None) {
             for e in &entries {
