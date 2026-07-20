@@ -2,7 +2,15 @@ use anyhow::Context;
 
 use crate::config::loader::config_dir;
 
-use super::discovery::{codex_backup_path, codex_config_path, codex_home};
+use super::discovery::{codex_config_path, codex_home};
+
+fn backup_path_for(config_path: &std::path::Path) -> std::path::PathBuf {
+    let file_name = config_path
+        .file_name()
+        .expect("Codex config path must have a file name")
+        .to_string_lossy();
+    config_path.with_file_name(format!("{file_name}.toche-backup"))
+}
 
 /// Outcome of connecting Codex to Toche.
 #[derive(Debug, Clone)]
@@ -70,8 +78,9 @@ pub fn apply_owned_fragment(
     // Extract the original upstream URL before overwriting
     let original_url = super::discovery::codex_upstream_url_from_toml_public(&content);
 
-    // Create backup if one doesn't exist
-    let backup_path = codex_backup_path();
+    // Keep the backup alongside its source so independently owned configs do
+    // not share lifecycle state.
+    let backup_path = backup_path_for(config_path);
     if config_path.exists() && !backup_path.exists() {
         std::fs::copy(config_path, &backup_path).context("Failed to backup Codex config.toml")?;
     }
@@ -136,7 +145,7 @@ pub fn remove_owned_fragment(
         return Ok(CodexDisconnectOutcome::NotConnected);
     }
 
-    let backup_path = codex_backup_path();
+    let backup_path = backup_path_for(config_path);
 
     if backup_path.exists() {
         // Restore from backup — but only Toche-owned fields, preserving
@@ -224,7 +233,7 @@ pub fn connect() -> anyhow::Result<CodexConnectOutcome> {
         return Ok(CodexConnectOutcome::AlreadyConnected);
     }
 
-    let backup_path = codex_backup_path();
+    let backup_path = backup_path_for(&settings_path);
     Ok(CodexConnectOutcome::Connected {
         config_path: settings_path.display().to_string(),
         backup_path: if backup_path.exists() {

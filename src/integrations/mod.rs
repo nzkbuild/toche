@@ -76,11 +76,12 @@ pub fn claude_settings_path() -> std::path::PathBuf {
     home_dir().join(".claude").join("settings.json")
 }
 
-/// Resolve the backup path for Claude settings.
-pub fn claude_backup_path() -> std::path::PathBuf {
-    home_dir()
-        .join(".claude")
-        .join("settings.json.toche-backup")
+pub(crate) fn backup_path_for(settings_path: &std::path::Path) -> std::path::PathBuf {
+    let file_name = settings_path
+        .file_name()
+        .expect("settings path must have a file name")
+        .to_string_lossy();
+    settings_path.with_file_name(format!("{file_name}.toche-backup"))
 }
 
 /// Apply the owned fragment to Claude settings.json atomically.
@@ -100,8 +101,9 @@ pub fn apply_owned_fragment(
         return Ok(None); // caller should detect AlreadyConnected
     }
 
-    // Create backup if one doesn't exist
-    let backup_path = claude_backup_path();
+    // Create a backup next to its source so independently owned settings files
+    // cannot interfere with one another.
+    let backup_path = backup_path_for(settings_path);
     if settings_path.exists() && !backup_path.exists() {
         std::fs::copy(settings_path, &backup_path).context("Failed to backup settings.json")?;
     }
@@ -153,7 +155,7 @@ pub fn remove_owned_fragment(settings_path: &std::path::Path) -> anyhow::Result<
         return Ok(DisconnectOutcome::NotConnected);
     }
 
-    let backup_path = claude_backup_path();
+    let backup_path = backup_path_for(settings_path);
 
     if backup_path.exists() {
         // Restore from backup — but only the Toche-owned fields, preserving
@@ -344,6 +346,44 @@ mod tests {
             final_settings.get("theme").and_then(|v| v.as_str()),
             Some("dark")
         );
+    }
+
+    #[test]
+    fn independent_apply_remove_operations_keep_backups_and_unrelated_settings_isolated() {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut workers = Vec::new();
+
+        for marker in ["alpha", "beta"] {
+            let barrier = std::sync::Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                let dir = tempfile::tempdir().unwrap();
+                let settings_path = dir.path().join("settings.json");
+                let original = make_settings(&format!("\"marker\": \"{marker}\""));
+                std::fs::write(
+                    &settings_path,
+                    serde_json::to_string_pretty(&original).unwrap(),
+                )
+                .unwrap();
+
+                barrier.wait();
+                apply_owned_fragment(&settings_path, &OwnedFragment::default_toche()).unwrap();
+
+                let backup_path = backup_path_for(&settings_path);
+                let backup = read_jsonc(&backup_path).unwrap();
+                assert_eq!(backup["marker"], marker);
+                assert!(!points_to_toche(&backup));
+
+                remove_owned_fragment(&settings_path).unwrap();
+                let restored = read_jsonc(&settings_path).unwrap();
+                assert_eq!(restored["marker"], marker);
+                assert!(!points_to_toche(&restored));
+                assert!(!backup_path.exists());
+            }));
+        }
+
+        for worker in workers {
+            worker.join().unwrap();
+        }
     }
 
     #[test]
