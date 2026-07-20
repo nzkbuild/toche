@@ -9,7 +9,6 @@ use reqwest::Client;
 use tracing::{error, info};
 
 use crate::cache;
-use crate::config::loader::config_dir;
 use crate::config::toche_config::CacheMode;
 use crate::continuity;
 use crate::efficiency;
@@ -254,7 +253,8 @@ pub async fn messages(
     let shield_result = if bypass_shield || is_streaming {
         shield::coalesce::CoalesceResult::Forward { key: String::new() }
     } else {
-        shield::coalesce::store()
+        state
+            .coalesce_store
             .try_acquire(
                 &upstream_url,
                 &fingerprint,
@@ -307,7 +307,7 @@ pub async fn messages(
                     if cfg.enabled {
                         let project = current_project_path();
                         let ws_fp = safe_cache::workspace::compute_workspace_fingerprint();
-                        let db_path = config_dir().join("ledger.db");
+                        let db_path = state.config_dir.join("ledger.db");
                         if let Ok(cache_db) = safe_cache::cache_db::CacheDb::open(&db_path) {
                             let _ = cache_db.evict_expired(cfg.ttl_days);
                             let _ = cache_db.evict_expired_rejects(cfg.ttl_days);
@@ -358,7 +358,7 @@ pub async fn messages(
             }
 
             if let Some(cached) = cache_hit {
-                shield::coalesce::store().complete(
+                state.coalesce_store.complete(
                     &key,
                     shield::coalesce::CapturedResponse {
                         status: cached.status,
@@ -501,7 +501,7 @@ pub async fn messages(
                                 if let Ok(hash) = reduce::storage::store(&fwd.body_bytes) {
                                     let ws_fp =
                                         safe_cache::workspace::compute_workspace_fingerprint();
-                                    let db_path = config_dir().join("ledger.db");
+                                    let db_path = state.config_dir.join("ledger.db");
                                     if let Ok(cache_db) =
                                         safe_cache::cache_db::CacheDb::open(&db_path)
                                     {
@@ -521,7 +521,7 @@ pub async fn messages(
                                     }
                                 }
                             } else if !verdict.safe && !verdict.reason.is_empty() {
-                                let db_path = config_dir().join("ledger.db");
+                                let db_path = state.config_dir.join("ledger.db");
                                 if let Ok(cache_db) = safe_cache::cache_db::CacheDb::open(&db_path)
                                 {
                                     let _ = cache_db.insert_reject(
@@ -571,8 +571,9 @@ pub async fn messages(
     let efficiency_mode = forwarded.efficiency_mode;
     let _efficiency_tokens_added = forwarded.efficiency_tokens_added;
     let id_ctx_for_ledger = id_ctx.clone();
+    let coalesce_store = Arc::clone(&state.coalesce_store);
     tokio::spawn(async move {
-        let db_path = config_dir().join("ledger.db");
+        let db_path = state.config_dir.join("ledger.db");
         let db = match LedgerDb::open(&db_path) {
             Ok(db) => db,
             Err(e) => {
@@ -585,7 +586,7 @@ pub async fn messages(
 
         // Complete shield entry so any waiters get the result
         if let Some(key) = shield_key_for_complete {
-            shield::coalesce::store().complete(
+            coalesce_store.complete(
                 &key,
                 shield::coalesce::CapturedResponse {
                     status: forwarded.status,
@@ -761,7 +762,7 @@ pub async fn responses(
     let id_ctx_for_ledger = id_ctx.clone();
 
     tokio::spawn(async move {
-        let db_path = config_dir().join("ledger.db");
+        let db_path = state.config_dir.join("ledger.db");
         let db = match LedgerDb::open(&db_path) {
             Ok(db) => db,
             Err(e) => {
