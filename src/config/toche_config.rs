@@ -36,6 +36,18 @@ pub struct RuntimeConfig {
     pub listen_address: String,
     #[serde(default = "default_request_timeout_ms")]
     pub request_timeout_ms: u64,
+    /// Maximum request body size in bytes (default 16 MiB).
+    #[serde(default = "default_max_request_body_bytes")]
+    pub max_request_body_bytes: u64,
+    /// Maximum upstream response body size in bytes (default 64 MiB).
+    #[serde(default = "default_max_response_body_bytes")]
+    pub max_response_body_bytes: u64,
+    /// Maximum concurrent upstream requests (default 8).
+    #[serde(default = "default_max_concurrent_upstream")]
+    pub max_concurrent_upstream: usize,
+    /// Max milliseconds to wait for a concurrency permit (default 60 s).
+    #[serde(default = "default_upstream_permit_timeout_ms")]
+    pub upstream_permit_timeout_ms: u64,
 }
 
 fn default_port() -> u16 {
@@ -47,6 +59,18 @@ fn default_listen_address() -> String {
 fn default_request_timeout_ms() -> u64 {
     300_000
 }
+fn default_max_request_body_bytes() -> u64 {
+    16 * 1024 * 1024 // 16 MiB
+}
+fn default_max_response_body_bytes() -> u64 {
+    64 * 1024 * 1024 // 64 MiB
+}
+fn default_max_concurrent_upstream() -> usize {
+    8
+}
+fn default_upstream_permit_timeout_ms() -> u64 {
+    60_000
+}
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
@@ -54,7 +78,55 @@ impl Default for RuntimeConfig {
             port: default_port(),
             listen_address: default_listen_address(),
             request_timeout_ms: default_request_timeout_ms(),
+            max_request_body_bytes: default_max_request_body_bytes(),
+            max_response_body_bytes: default_max_response_body_bytes(),
+            max_concurrent_upstream: default_max_concurrent_upstream(),
+            upstream_permit_timeout_ms: default_upstream_permit_timeout_ms(),
         }
+    }
+}
+
+impl RuntimeConfig {
+    /// Validate runtime configuration values. Returns a list of human-readable
+    /// validation error messages. An empty vec means valid.
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors: Vec<String> = Vec::new();
+
+        if self.max_request_body_bytes == 0 {
+            errors.push("runtime.max_request_body_bytes must not be zero".into());
+        }
+        if self.max_request_body_bytes > 256 * 1024 * 1024 {
+            errors.push(format!(
+                "runtime.max_request_body_bytes is unreasonably large ({} > 256 MiB)",
+                self.max_request_body_bytes
+            ));
+        }
+
+        if self.max_response_body_bytes == 0 {
+            errors.push("runtime.max_response_body_bytes must not be zero".into());
+        }
+        if self.max_response_body_bytes > 1024 * 1024 * 1024 {
+            errors.push(format!(
+                "runtime.max_response_body_bytes is unreasonably large ({} > 1 GiB)",
+                self.max_response_body_bytes
+            ));
+        }
+
+        if self.max_concurrent_upstream == 0 {
+            errors.push("runtime.max_concurrent_upstream must not be zero".into());
+        }
+        if self.max_concurrent_upstream > 1024 {
+            errors.push(format!(
+                "runtime.max_concurrent_upstream is unreasonably large ({} > 1024)",
+                self.max_concurrent_upstream
+            ));
+        }
+
+        if self.upstream_permit_timeout_ms == 0 {
+            errors.push("runtime.upstream_permit_timeout_ms must not be zero".into());
+        }
+
+        errors
     }
 }
 
@@ -340,6 +412,69 @@ mod tests {
         assert_eq!(cfg.port, 8743);
         assert_eq!(cfg.listen_address, "127.0.0.1");
         assert_eq!(cfg.request_timeout_ms, 300_000);
+        assert_eq!(cfg.max_request_body_bytes, 16 * 1024 * 1024);
+        assert_eq!(cfg.max_response_body_bytes, 64 * 1024 * 1024);
+        assert_eq!(cfg.max_concurrent_upstream, 8);
+        assert_eq!(cfg.upstream_permit_timeout_ms, 60_000);
+    }
+
+    #[test]
+    fn runtime_config_validate_zero_values() {
+        let cfg = RuntimeConfig {
+            port: 8743,
+            max_request_body_bytes: 0,
+            max_response_body_bytes: 0,
+            max_concurrent_upstream: 0,
+            upstream_permit_timeout_ms: 0,
+            ..RuntimeConfig::default()
+        };
+        let errors = cfg.validate();
+        assert!(!errors.is_empty());
+        assert!(errors.iter().any(|e| e.contains("max_request_body_bytes")));
+        assert!(errors.iter().any(|e| e.contains("max_response_body_bytes")));
+        assert!(errors.iter().any(|e| e.contains("max_concurrent_upstream")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("upstream_permit_timeout_ms"))
+        );
+    }
+
+    #[test]
+    fn runtime_config_validate_overflow_values() {
+        let cfg = RuntimeConfig {
+            port: 8743,
+            max_request_body_bytes: 300 * 1024 * 1024,
+            max_response_body_bytes: 2 * 1024 * 1024 * 1024,
+            max_concurrent_upstream: 2048,
+            ..RuntimeConfig::default()
+        };
+        let errors = cfg.validate();
+        assert!(!errors.is_empty());
+        assert!(errors.iter().any(|e| e.contains("max_request_body_bytes")));
+        assert!(errors.iter().any(|e| e.contains("max_response_body_bytes")));
+        assert!(errors.iter().any(|e| e.contains("max_concurrent_upstream")));
+    }
+
+    #[test]
+    fn runtime_config_valid_passes() {
+        let cfg = RuntimeConfig::default();
+        assert!(cfg.validate().is_empty());
+    }
+
+    #[test]
+    fn runtime_config_deserialize_missing_uses_defaults() {
+        let toml_str = r#"
+port = 9999
+listen_address = "0.0.0.0"
+request_timeout_ms = 10000
+"#;
+        let cfg: RuntimeConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.port, 9999);
+        assert_eq!(cfg.max_request_body_bytes, 16 * 1024 * 1024);
+        assert_eq!(cfg.max_response_body_bytes, 64 * 1024 * 1024);
+        assert_eq!(cfg.max_concurrent_upstream, 8);
+        assert_eq!(cfg.upstream_permit_timeout_ms, 60_000);
     }
 
     #[test]

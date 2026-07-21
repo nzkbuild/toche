@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
 use axum::response::sse::{Event, Sse};
 use futures::stream::Stream;
 use reqwest::Client;
@@ -12,6 +13,7 @@ use crate::cache;
 use crate::config::toche_config::CacheMode;
 use crate::continuity;
 use crate::efficiency;
+use crate::gateway::bounded_body;
 use crate::gateway::server::AppState;
 use crate::identity::{self, IdentityContext, RequestId};
 use crate::meter::db::{LedgerDb, NewLedgerRecord};
@@ -49,14 +51,16 @@ struct ForwardedResponse {
     local_cache_hit: bool,
 }
 
-/// Forward a request to the upstream and collect the full response body.
+/// Forward a request to the upstream and collect the full response body,
+/// enforcing `max_response_body_bytes`.
 async fn forward_to_upstream(
     client: &Client,
     upstream_url: &str,
     upstream_headers: HeaderMap,
     body: String,
     protocol: &dyn Protocol,
-) -> Result<ForwardedResponse, StatusCode> {
+    max_response_body_bytes: u64,
+) -> Result<ForwardedResponse, axum::response::Response> {
     let response = client
         .post(upstream_url)
         .headers(upstream_headers)
@@ -65,7 +69,7 @@ async fn forward_to_upstream(
         .await
         .map_err(|e| {
             error!("Upstream request failed: {e}");
-            StatusCode::BAD_GATEWAY
+            status_response(StatusCode::BAD_GATEWAY)
         })?;
 
     let status = response.status().as_u16();
@@ -73,11 +77,22 @@ async fn forward_to_upstream(
 
     let collected = Arc::new(Mutex::new(Vec::new()));
     let collected_for_stream = collected.clone();
+    let mut total: u64 = 0;
 
     let mut stream = response.bytes_stream();
     while let Some(result) = futures::StreamExt::next(&mut stream).await {
         match result {
             Ok(bytes) => {
+                let chunk_len = bytes.len() as u64;
+                if total + chunk_len > max_response_body_bytes {
+                    error!(
+                        "Upstream response body exceeded limit: {} + {} > {}",
+                        total, chunk_len, max_response_body_bytes
+                    );
+                    return Err((StatusCode::BAD_GATEWAY, "502 Upstream Response Too Large")
+                        .into_response());
+                }
+                total += chunk_len;
                 if let Ok(mut buf) = collected_for_stream.lock() {
                     buf.extend_from_slice(&bytes);
                 }
@@ -105,24 +120,41 @@ async fn forward_to_upstream(
     })
 }
 
+/// Helper: convert a `StatusCode` into an axum `Response`.
+fn status_response(code: StatusCode) -> axum::response::Response {
+    (code, code.canonical_reason().unwrap_or("Unknown")).into_response()
+}
+
+/// Convert `StatusCode` to `axum::response::Response`.
+macro_rules! bail_status {
+    ($code:expr) => {
+        return Err(status_response($code))
+    };
+}
+
 pub async fn messages(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    body: String,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    body: axum::body::Body,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, axum::response::Response> {
     let timer = RequestTimer::start();
     let request_id = RequestId::new();
 
-    let resolved = state.default_integration.clone().ok_or_else(|| {
-        error!("No default integration configured");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    // Read body with size limit — fails with 413 before String/JSON parsing
+    let body_bytes =
+        bounded_body::read_body_limited(&headers, body, state.max_request_body_bytes).await?;
+    let body_str = String::from_utf8_lossy(&body_bytes).to_string();
+
+    let resolved = state
+        .default_integration
+        .clone()
+        .ok_or_else(|| status_response(StatusCode::INTERNAL_SERVER_ERROR))?;
 
     let protocol = AnthropicProtocol;
 
-    let model = protocol.extract_model(&body);
+    let model = protocol.extract_model(&body_str);
     let integration_name = resolved.name.clone();
-    let input_tokens = estimate_tokens(&body);
+    let input_tokens = estimate_tokens(&body_str);
 
     // Model validation: if integration has a whitelist, reject unknown models
     if !resolved.models.is_empty() && !resolved.models.contains_key(&model) {
@@ -132,7 +164,7 @@ pub async fn messages(
             integration_name,
             resolved.models.keys().collect::<Vec<_>>()
         );
-        return Err(StatusCode::BAD_REQUEST);
+        bail_status!(StatusCode::BAD_REQUEST);
     }
 
     let upstream_url = format!(
@@ -153,7 +185,7 @@ pub async fn messages(
     let trust_domain_id = identity::derive_trust_domain_id(
         &resolved.id,
         &resolved.name,
-        &resolved.id, // upstream.id is not directly on resolved, use integration id as proxy
+        &resolved.id,
         &secret_ref_display,
     );
 
@@ -207,10 +239,8 @@ pub async fn messages(
         request_id, integration_name, model
     );
 
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_millis(state.request_timeout_ms))
-        .build()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Use the shared client from AppState
+    let client = &state.http_client;
 
     let mut upstream_headers = HeaderMap::new();
     for (name, value) in &headers {
@@ -224,9 +254,9 @@ pub async fn messages(
     for (header_name, header_value) in &resolved.upstream_headers {
         upstream_headers.insert(
             axum::http::HeaderName::from_bytes(header_name.as_bytes())
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                .map_err(|_| status_response(StatusCode::INTERNAL_SERVER_ERROR))?,
             axum::http::HeaderValue::from_str(header_value)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                .map_err(|_| status_response(StatusCode::INTERNAL_SERVER_ERROR))?,
         );
     }
 
@@ -234,9 +264,9 @@ pub async fn messages(
     if let Some(value) = &resolved.auth.value {
         upstream_headers.insert(
             axum::http::HeaderName::from_bytes(resolved.auth.header_name.as_bytes())
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                .map_err(|_| status_response(StatusCode::INTERNAL_SERVER_ERROR))?,
             axum::http::HeaderValue::from_str(value)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                .map_err(|_| status_response(StatusCode::INTERNAL_SERVER_ERROR))?,
         );
     }
 
@@ -247,9 +277,9 @@ pub async fn messages(
     let bypass_efficiency = bypass_all || is_bypassed(&headers, "x-toche-bypass-efficiency");
     let bypass_cache = bypass_all || is_bypassed(&headers, "x-toche-bypass-cache");
 
-    let is_streaming = protocol.is_streaming(&body);
+    let is_streaming = protocol.is_streaming(&body_str);
 
-    let fingerprint = protocol.fingerprint(&body);
+    let fingerprint = protocol.fingerprint(&body_str);
     let shield_result = if bypass_shield || is_streaming {
         shield::coalesce::CoalesceResult::Forward { key: String::new() }
     } else {
@@ -273,6 +303,7 @@ pub async fn messages(
                 model,
                 id_ctx.trust_domain_id.as_str()
             );
+            // Coalesced waiter uses NO semaphore permit
             (
                 ForwardedResponse {
                     status: captured.status,
@@ -292,7 +323,7 @@ pub async fn messages(
         }
         shield::coalesce::CoalesceResult::Failed => {
             error!("Shield: prior request failed, rejecting");
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
+            bail_status!(StatusCode::SERVICE_UNAVAILABLE);
         }
         shield::coalesce::CoalesceResult::Forward { key } => {
             info!("Forwarding to upstream: {upstream_url}");
@@ -370,18 +401,19 @@ pub async fn messages(
                 let default_reduce = reduce::config::ReduceConfig::default();
                 let reduce_cfg = resolved.reduce.as_ref().unwrap_or(&default_reduce);
 
-                let reduction = reduce::transform::reduce_body(&body, reduce_cfg, bypass_reduce)
-                    .unwrap_or_else(|e| {
-                        error!("Reduce: falling back to original body: {e}");
-                        reduce::transform::ReductionResult {
-                            modified_body: body.clone(),
-                            tokens_raw: 0,
-                            tokens_reduced: 0,
-                            reductions: 0,
-                            passthroughs: 0,
-                            hashes: Vec::new(),
-                        }
-                    });
+                let reduction =
+                    reduce::transform::reduce_body(&body_str, reduce_cfg, bypass_reduce)
+                        .unwrap_or_else(|e| {
+                            error!("Reduce: falling back to original body: {e}");
+                            reduce::transform::ReductionResult {
+                                modified_body: body_str.clone(),
+                                tokens_raw: 0,
+                                tokens_reduced: 0,
+                                reductions: 0,
+                                passthroughs: 0,
+                                hashes: Vec::new(),
+                            }
+                        });
 
                 let reduced_body = reduction.modified_body;
 
@@ -477,12 +509,26 @@ pub async fn messages(
                     body_after_efficiency
                 };
 
+                // Acquire a timed permit only while the provider request is active.
+                // Safe-cache hits and coalesced waiters consume zero permits.
+                let _permit = tokio::time::timeout(
+                    std::time::Duration::from_millis(state.upstream_permit_timeout_ms),
+                    state.upstream_semaphore.acquire(),
+                )
+                .await
+                .map_err(|_| {
+                    error!("Timed out waiting for concurrency permit");
+                    status_response(StatusCode::SERVICE_UNAVAILABLE)
+                })?
+                .map_err(|_| status_response(StatusCode::SERVICE_UNAVAILABLE))?;
+
                 let mut fwd = forward_to_upstream(
-                    &client,
+                    client,
                     &upstream_url,
                     upstream_headers,
                     final_body,
                     &protocol,
+                    state.max_response_body_bytes,
                 )
                 .await?;
                 fwd.reduction_input_tokens = reduction.tokens_raw;
@@ -492,6 +538,8 @@ pub async fn messages(
                 fwd.efficiency_mode = efficiency_mode_name;
 
                 // On cache miss with safe response, store for future reuse.
+                // Oversized responses (from forward_to_upstream returning error)
+                // never reach this block since they return Err beforehand.
                 if !bypass_safe_cache {
                     if let Some(cfg) = safe_cache_cfg {
                         if cfg.enabled && fwd.status >= 200 && fwd.status < 300 {
@@ -572,8 +620,9 @@ pub async fn messages(
     let _efficiency_tokens_added = forwarded.efficiency_tokens_added;
     let id_ctx_for_ledger = id_ctx.clone();
     let coalesce_store = Arc::clone(&state.coalesce_store);
+    let config_dir = state.config_dir.clone();
     tokio::spawn(async move {
-        let db_path = state.config_dir.join("ledger.db");
+        let db_path = config_dir.join("ledger.db");
         let db = match LedgerDb::open(&db_path) {
             Ok(db) => db,
             Err(e) => {
@@ -633,21 +682,26 @@ pub async fn messages(
 pub async fn responses(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    body: String,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    body: axum::body::Body,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, axum::response::Response> {
     let timer = RequestTimer::start();
     let request_id = RequestId::new();
 
-    let resolved = state.default_integration.clone().ok_or_else(|| {
-        error!("No default integration configured");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    // Read body with size limit
+    let body_bytes =
+        bounded_body::read_body_limited(&headers, body, state.max_request_body_bytes).await?;
+    let body_str = String::from_utf8_lossy(&body_bytes).to_string();
+
+    let resolved = state
+        .default_integration
+        .clone()
+        .ok_or_else(|| status_response(StatusCode::INTERNAL_SERVER_ERROR))?;
 
     let protocol = OpenAiResponsesProtocol;
 
-    let model = protocol.extract_model(&body);
+    let model = protocol.extract_model(&body_str);
     let integration_name = resolved.name.clone();
-    let input_tokens = estimate_tokens(&body);
+    let input_tokens = estimate_tokens(&body_str);
 
     let upstream_url = format!(
         "{}{}",
@@ -695,10 +749,7 @@ pub async fn responses(
         request_id, integration_name, model
     );
 
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_millis(state.request_timeout_ms))
-        .build()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let client = &state.http_client;
 
     let mut upstream_headers = HeaderMap::new();
     for (name, value) in &headers {
@@ -712,31 +763,44 @@ pub async fn responses(
     for (header_name, header_value) in &resolved.upstream_headers {
         upstream_headers.insert(
             axum::http::HeaderName::from_bytes(header_name.as_bytes())
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                .map_err(|_| status_response(StatusCode::INTERNAL_SERVER_ERROR))?,
             axum::http::HeaderValue::from_str(header_value)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                .map_err(|_| status_response(StatusCode::INTERNAL_SERVER_ERROR))?,
         );
     }
 
     if let Some(value) = &resolved.auth.value {
         upstream_headers.insert(
             axum::http::HeaderName::from_bytes(resolved.auth.header_name.as_bytes())
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                .map_err(|_| status_response(StatusCode::INTERNAL_SERVER_ERROR))?,
             axum::http::HeaderValue::from_str(value)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                .map_err(|_| status_response(StatusCode::INTERNAL_SERVER_ERROR))?,
         );
     }
 
-    let _is_streaming = protocol.is_streaming(&body);
+    let _is_streaming = protocol.is_streaming(&body_str);
+
+    // Acquire a timed concurrency permit
+    let _permit = tokio::time::timeout(
+        std::time::Duration::from_millis(state.upstream_permit_timeout_ms),
+        state.upstream_semaphore.acquire(),
+    )
+    .await
+    .map_err(|_| {
+        error!("Timed out waiting for concurrency permit (responses)");
+        status_response(StatusCode::SERVICE_UNAVAILABLE)
+    })?
+    .map_err(|_| status_response(StatusCode::SERVICE_UNAVAILABLE))?;
 
     info!("Forwarding (responses) to upstream: {upstream_url}");
 
     let fwd = forward_to_upstream(
-        &client,
+        client,
         &upstream_url,
         upstream_headers,
-        body.clone(),
+        body_str,
         &protocol,
+        state.max_response_body_bytes,
     )
     .await?;
 
@@ -760,9 +824,10 @@ pub async fn responses(
     let status_clone = status_str.to_string();
     let project_path = current_project_path();
     let id_ctx_for_ledger = id_ctx.clone();
+    let config_dir = state.config_dir.clone();
 
     tokio::spawn(async move {
-        let db_path = state.config_dir.join("ledger.db");
+        let db_path = config_dir.join("ledger.db");
         let db = match LedgerDb::open(&db_path) {
             Ok(db) => db,
             Err(e) => {

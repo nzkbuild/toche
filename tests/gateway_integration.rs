@@ -435,6 +435,1155 @@ async fn endpoint_fails_mid_stream_partial_response_not_cached() {
     }
 }
 
+// ─── Runtime Limits Tests ───────────────────────────────────────────────
+
+/// Config with specific runtime limits.
+fn config_with_limits(
+    upstream_url: &str,
+    max_req: u64,
+    max_resp: u64,
+    max_concurrent: usize,
+    permit_timeout: u64,
+) -> String {
+    format!(
+        r#"
+schema_version = 2
+
+[runtime]
+port = 0
+listen_address = "127.0.0.1"
+request_timeout_ms = 300000
+max_request_body_bytes = {max_req}
+max_response_body_bytes = {max_resp}
+max_concurrent_upstream = {max_concurrent}
+upstream_permit_timeout_ms = {permit_timeout}
+
+[defaults]
+integration = "a1b2c3d4"
+
+[storage]
+ledger_db = "ledger.db"
+cas_dir = "cas"
+
+[[integrations]]
+id = "a1b2c3d4"
+name = "default"
+upstream = "e5f6a7b8"
+policy = "c9d0e1f2"
+
+[[upstreams]]
+id = "e5f6a7b8"
+name = "upstream"
+url = "{upstream_url}"
+
+[upstreams.auth]
+type = "legacy_inline"
+value = "test-key"
+header_name = "x-api-key"
+
+[[policies]]
+id = "c9d0e1f2"
+name = "default"
+"#
+    )
+}
+
+// --- Request body: below limit ---
+
+#[tokio::test]
+async fn request_body_below_limit_succeeds() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+                "text/event-stream",
+            ),
+        )
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    // max_request_body_bytes = 1024, body is ~90 bytes
+    let config = config_with_limits(&mock.uri(), 1024, 65536, 8, 60000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+// --- Request body: exact limit ---
+
+#[tokio::test]
+async fn request_body_at_exact_limit_succeeds() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+                "text/event-stream",
+            ),
+        )
+        .mount(&mock)
+        .await;
+
+    let body =
+        r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#;
+    let limit = body.len() as u64;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_limits(&mock.uri(), limit, 65536, 8, 60000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+// --- Request body: above limit (Content-Length) ---
+
+#[tokio::test]
+async fn request_body_above_limit_via_content_length_returns_413() {
+    let mock = MockServer::start().await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_limits(&mock.uri(), 50, 65536, 8, 60000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body("x".repeat(200))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 413);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("413"), "expected plain-text 413, got: {body}");
+}
+
+// --- Request body: above limit (chunked) ---
+
+#[tokio::test]
+async fn request_body_above_limit_chunked_returns_413() {
+    let mock = MockServer::start().await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    // Small limit: 64 bytes
+    let config = config_with_limits(&mock.uri(), 64, 65536, 8, 60000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    // Send a body larger than 64 bytes without Content-Length (chunked encoding)
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("transfer-encoding", "chunked")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body("x".repeat(100))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 413);
+}
+
+// --- Request body: limit on responses route too ---
+
+#[tokio::test]
+async fn request_body_limit_applies_to_responses_route() {
+    let mock = MockServer::start().await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_limits(&mock.uri(), 50, 65536, 8, 60000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/responses"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .body("x".repeat(200))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 413);
+}
+
+// --- Response body: below limit ---
+
+#[tokio::test]
+async fn response_body_below_limit_succeeds() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("hello world", "text/event-stream"))
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_limits(&mock.uri(), 65536, 1024, 8, 60000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+// --- Response body: exact at limit ---
+
+#[tokio::test]
+async fn response_body_at_exact_limit_succeeds() {
+    let body_data = "hello world exactly 42 bytes padding!!";
+    let limit = body_data.len() as u64;
+
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body_data, "text/event-stream"))
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_limits(&mock.uri(), 65536, limit, 8, 60000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+// --- Response body: above limit ---
+
+#[tokio::test]
+async fn response_body_above_limit_returns_502() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw("x".repeat(5000), "text/event-stream"),
+        )
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    // max_response_body_bytes = 100
+    let config = config_with_limits(&mock.uri(), 65536, 100, 8, 60000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 502);
+    assert_eq!(
+        resp.text().await.unwrap(),
+        "502 Upstream Response Too Large"
+    );
+}
+
+// --- Oversized response not cached ---
+
+#[tokio::test]
+async fn oversized_response_not_cached() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw("x".repeat(5000), "text/event-stream"),
+        )
+        .mount(&mock)
+        .await;
+
+    let _lock = CONFIG_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+
+    // Config with safe_cache enabled and small response limit
+    let config = format!(
+        r#"
+schema_version = 2
+
+[runtime]
+port = 0
+listen_address = "127.0.0.1"
+request_timeout_ms = 300000
+max_request_body_bytes = 65536
+max_response_body_bytes = 100
+max_concurrent_upstream = 8
+upstream_permit_timeout_ms = 60000
+
+[defaults]
+integration = "a1b2c3d4"
+
+[storage]
+ledger_db = "ledger.db"
+cas_dir = "cas"
+
+[[integrations]]
+id = "a1b2c3d4"
+name = "default"
+upstream = "e5f6a7b8"
+policy = "c9d0e1f2"
+
+[[upstreams]]
+id = "e5f6a7b8"
+name = "upstream"
+url = "{mock_uri}"
+
+[upstreams.auth]
+type = "legacy_inline"
+value = "test-key"
+header_name = "x-api-key"
+
+[[policies]]
+id = "c9d0e1f2"
+name = "default"
+
+[policies.safe_cache]
+enabled = true
+ttl_days = 30
+max_entry_mb = 10
+"#,
+        mock_uri = mock.uri()
+    );
+    let (addr, _handle) = spawn_gateway_under_lock(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 502);
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // Check ledger — no local_cache_hit for this request
+    let ledger_path = config_dir.join("ledger.db");
+    if ledger_path.exists() {
+        let db = toche::meter::db::LedgerDb::open(&ledger_path).unwrap();
+        let entries = db.get_entries(10, None).unwrap();
+        for e in &entries {
+            assert!(!e.local_cache_hit, "oversized response must not be cached");
+        }
+    }
+}
+
+// --- Concurrency: at max allowed ---
+
+#[tokio::test]
+async fn concurrency_within_limit_active_upstreams_never_exceed_max() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let active = Arc::new(AtomicU64::new(0));
+    let peak = Arc::new(AtomicU64::new(0));
+
+    let mock = MockServer::start().await;
+    let active_clone = active.clone();
+    let peak_clone = peak.clone();
+    let body_data = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n";
+
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(move |_req: &wiremock::Request| {
+            let prev = active_clone.fetch_add(1, Ordering::SeqCst);
+            peak_clone.fetch_max(prev + 1, Ordering::SeqCst);
+
+            // Schedule decrement after the same delay the gateway uses for upstream work
+            let active_for_exit = active_clone.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                active_for_exit.fetch_sub(1, Ordering::SeqCst);
+            });
+
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(300))
+                .set_body_raw(body_data, "text/event-stream")
+        })
+        .expect(6)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    // max_concurrent = 2, send 6 requests — peak must not exceed 2
+    let config = config_with_limits(&mock.uri(), 65536, 65536, 2, 10000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let mut handles = Vec::new();
+    for _ in 0..6 {
+        let url = format!("http://{addr}/v1/messages");
+        let client = client.clone();
+        handles.push(tokio::spawn(async move {
+            client
+                .post(&url)
+                .header("content-type", "application/json")
+                .header("x-api-key", "test-key")
+                .header("x-toche-bypass-safe-cache", "true")
+                .header("x-toche-bypass-shield", "true")
+                .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+                .send()
+                .await
+                .unwrap()
+        }));
+    }
+
+    for h in handles {
+        let resp = h.await.unwrap();
+        assert_eq!(resp.status(), 200, "all requests should succeed");
+    }
+
+    // Allow all decrements to settle
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let peak_val = peak.load(Ordering::SeqCst);
+    assert!(
+        peak_val <= 2,
+        "peak active upstream requests {peak_val} exceeded max_concurrent=2"
+    );
+    assert!(peak_val > 0, "expected at least some concurrency");
+    // Eventually settled
+    assert_eq!(
+        active.load(Ordering::SeqCst),
+        0,
+        "all upstream work should be done"
+    );
+}
+
+// --- Concurrency: above limit, some wait, all succeed ---
+
+#[tokio::test]
+async fn concurrency_above_limit_wait_succeeds() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(200))
+                .set_body_raw(
+                    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+                    "text/event-stream",
+                ),
+        )
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    // max_concurrent = 2, permit_timeout = 10_000ms
+    let config = config_with_limits(&mock.uri(), 65536, 65536, 2, 10000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let mut handles = Vec::new();
+    for _ in 0..6 {
+        let url = format!("http://{addr}/v1/messages");
+        let client = client.clone();
+        handles.push(tokio::spawn(async move {
+            client
+                .post(&url)
+                .header("content-type", "application/json")
+                .header("x-api-key", "test-key")
+                .header("x-toche-bypass-safe-cache", "true")
+                .header("x-toche-bypass-shield", "true")
+                .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+                .send()
+                .await
+                .unwrap()
+        }));
+    }
+
+    for h in handles {
+        let resp = h.await.unwrap();
+        assert_eq!(resp.status(), 200, "all requests should succeed with wait");
+    }
+}
+
+// --- Permit timeout ---
+
+#[tokio::test]
+async fn permit_timeout_returns_503() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(500))
+                .set_body_raw(
+                    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+                    "text/event-stream",
+                ),
+        )
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    // max_concurrent = 1, permit_timeout = 100ms (will expire before slow upstream completes)
+    let config = config_with_limits(&mock.uri(), 65536, 65536, 1, 100);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+
+    // First request consumes the only permit
+    let url1 = format!("http://{addr}/v1/messages");
+    let url2 = url1.clone();
+    let first_client = client.clone();
+    let h1 = tokio::spawn(async move {
+        first_client
+            .post(&url1)
+            .header("content-type", "application/json")
+            .header("x-api-key", "test-key")
+            .header("x-toche-bypass-safe-cache", "true")
+            .header("x-toche-bypass-shield", "true")
+            .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+            .send()
+            .await
+            .unwrap()
+    });
+
+    // Second request waits for permit, but timeout is only 100ms
+    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    let resp2 = client
+        .post(&url2)
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp2.status(), 503, "permit timeout should return 503");
+
+    let resp1 = h1.await.unwrap();
+    assert_eq!(
+        resp1.status(),
+        200,
+        "first request with permit should succeed"
+    );
+}
+
+// --- Coalesced uses no extra permit ---
+
+#[tokio::test]
+async fn coalesced_waiter_uses_no_extra_permit() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(300))
+                .set_body_raw(
+                    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+                    "text/event-stream",
+                ),
+        )
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    // max_concurrent = 1 — if coalesced required a permit, the second request would time out
+    let config = config_with_limits(&mock.uri(), 65536, 65536, 1, 500);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+
+    let url1 = format!("http://{addr}/v1/messages");
+    let url2 = url1.clone();
+    let url3 = url1.clone();
+
+    // Send 3 requests with the same body (same fingerprint → coalesced)
+    // Leader acquires the 1 permit. Waiters should NOT need permits.
+    let client1 = client.clone();
+    let h1 = tokio::spawn(async move {
+        client1
+            .post(&url1)
+            .header("content-type", "application/json")
+            .header("x-api-key", "test-key")
+            .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+            .send()
+            .await
+            .unwrap()
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+
+    let client2 = client.clone();
+    let h2 = tokio::spawn(async move {
+        client2
+            .post(&url2)
+            .header("content-type", "application/json")
+            .header("x-api-key", "test-key")
+            .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+            .send()
+            .await
+            .unwrap()
+    });
+
+    let h3 = tokio::spawn(async move {
+        client
+            .post(&url3)
+            .header("content-type", "application/json")
+            .header("x-api-key", "test-key")
+            .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+            .send()
+            .await
+            .unwrap()
+    });
+
+    for h in [h1, h2, h3] {
+        let resp = h.await.unwrap();
+        assert_eq!(
+            resp.status(),
+            200,
+            "all 3 should succeed with only 1 permit"
+        );
+    }
+}
+
+// --- Partially-specified [runtime] config uses defaults ---
+
+#[tokio::test]
+async fn partial_runtime_config_uses_defaults() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+                "text/event-stream",
+            ),
+        )
+        .mount(&mock)
+        .await;
+
+    // Config without any [runtime] section — all new fields should get defaults
+    let config = format!(
+        r#"
+schema_version = 2
+
+[runtime]
+port = 0
+listen_address = "127.0.0.1"
+request_timeout_ms = 300000
+
+[defaults]
+integration = "a1b2c3d4"
+
+[storage]
+ledger_db = "ledger.db"
+cas_dir = "cas"
+
+[[integrations]]
+id = "a1b2c3d4"
+name = "default"
+upstream = "e5f6a7b8"
+policy = "c9d0e1f2"
+
+[[upstreams]]
+id = "e5f6a7b8"
+name = "upstream"
+url = "{}"
+
+[upstreams.auth]
+type = "legacy_inline"
+value = "test-key"
+header_name = "x-api-key"
+
+[[policies]]
+id = "c9d0e1f2"
+name = "default"
+"#,
+        mock.uri()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+
+    // Request should succeed with default limits (16 MiB request, 64 MiB response)
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+// --- Missing [runtime] section entirely ---
+
+#[tokio::test]
+async fn no_runtime_section_uses_defaults() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+                "text/event-stream",
+            ),
+        )
+        .mount(&mock)
+        .await;
+
+    // No [runtime] section at all — RuntimeConfig::default() supplies all values
+    let config = format!(
+        r#"
+schema_version = 2
+
+[defaults]
+integration = "a1b2c3d4"
+
+[storage]
+ledger_db = "ledger.db"
+cas_dir = "cas"
+
+[[integrations]]
+id = "a1b2c3d4"
+name = "default"
+upstream = "e5f6a7b8"
+policy = "c9d0e1f2"
+
+[[upstreams]]
+id = "e5f6a7b8"
+name = "upstream"
+url = "{}"
+
+[upstreams.auth]
+type = "legacy_inline"
+value = "test-key"
+header_name = "x-api-key"
+
+[[policies]]
+id = "c9d0e1f2"
+name = "default"
+"#,
+        mock.uri()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+// --- Invalid config values rejected at startup ---
+
+#[tokio::test]
+async fn zero_max_request_body_bytes_rejected_at_build() {
+    let mock = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_limits(&mock.uri(), 0, 65536, 8, 60000);
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("config.toml"), config).unwrap();
+
+    let result = {
+        let _lock = CONFIG_LOCK.lock().await;
+        build_router(Some(config_dir.to_path_buf()))
+    };
+    assert!(result.is_err(), "zero max_request_body_bytes should fail");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("max_request_body_bytes"),
+        "error should mention the field"
+    );
+}
+
+#[tokio::test]
+async fn zero_max_response_body_bytes_rejected_at_build() {
+    let mock = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_limits(&mock.uri(), 65536, 0, 8, 60000);
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("config.toml"), config).unwrap();
+
+    let result = {
+        let _lock = CONFIG_LOCK.lock().await;
+        build_router(Some(config_dir.to_path_buf()))
+    };
+    assert!(result.is_err(), "zero max_response_body_bytes should fail");
+}
+
+#[tokio::test]
+async fn zero_max_concurrent_upstream_rejected_at_build() {
+    let mock = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_limits(&mock.uri(), 65536, 65536, 0, 60000);
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("config.toml"), config).unwrap();
+
+    let result = {
+        let _lock = CONFIG_LOCK.lock().await;
+        build_router(Some(config_dir.to_path_buf()))
+    };
+    assert!(result.is_err(), "zero max_concurrent_upstream should fail");
+}
+
+#[tokio::test]
+async fn zero_upstream_permit_timeout_rejected_at_build() {
+    let mock = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_limits(&mock.uri(), 65536, 65536, 8, 0);
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("config.toml"), config).unwrap();
+
+    let result = {
+        let _lock = CONFIG_LOCK.lock().await;
+        build_router(Some(config_dir.to_path_buf()))
+    };
+    assert!(result.is_err(), "zero upstream_permit_timeout should fail");
+}
+
+// --- Existing Claude behavior preserved ---
+
+#[tokio::test]
+async fn claude_messages_still_handles_reduce_and_cache() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":5,\"output_tokens\":3}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Cache+reduce test OK\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+                "text/event-stream",
+            ),
+        )
+        .mount(&mock)
+        .await;
+
+    let _lock = CONFIG_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+
+    let config = format!(
+        r#"
+schema_version = 2
+
+[runtime]
+port = 0
+listen_address = "127.0.0.1"
+request_timeout_ms = 300000
+
+[defaults]
+integration = "a1b2c3d4"
+
+[storage]
+ledger_db = "ledger.db"
+cas_dir = "cas"
+
+[[integrations]]
+id = "a1b2c3d4"
+name = "default"
+upstream = "e5f6a7b8"
+policy = "c9d0e1f2"
+
+[[upstreams]]
+id = "e5f6a7b8"
+name = "upstream"
+url = "{}"
+
+[upstreams.auth]
+type = "legacy_inline"
+value = "test-key"
+header_name = "x-api-key"
+
+[[policies]]
+id = "c9d0e1f2"
+name = "default"
+cache = {{ enabled = true, mode = "auto", breakpoint = "standard" }}
+"#,
+        mock.uri()
+    );
+    let (addr, _handle) = spawn_gateway_under_lock(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi there"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("Cache+reduce test OK"));
+}
+
+// --- Existing Codex behavior preserved ---
+
+#[tokio::test]
+async fn codex_responses_still_forwards() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5\",\"output\":[]}}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5\",\"output\":[]}}\n",
+                "text/event-stream",
+            ),
+        )
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_limits(&mock.uri(), 65536, 65536, 8, 60000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/responses"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .body(r#"{"model":"gpt-5","input":"Hello"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("response.created"));
+}
+
+// --- Permit released after upstream failure ---
+
+#[tokio::test]
+async fn permit_released_after_upstream_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+
+    // Bind a listener and keep it alive — TCP accepts but no HTTP response
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_port = listener.local_addr().unwrap().port();
+
+    let config = format!(
+        r#"
+schema_version = 2
+
+[runtime]
+port = 0
+listen_address = "127.0.0.1"
+request_timeout_ms = 500
+max_request_body_bytes = 65536
+max_response_body_bytes = 65536
+max_concurrent_upstream = 1
+upstream_permit_timeout_ms = 60000
+
+[defaults]
+integration = "a1b2c3d4"
+
+[storage]
+ledger_db = "ledger.db"
+cas_dir = "cas"
+
+[[integrations]]
+id = "a1b2c3d4"
+name = "default"
+upstream = "e5f6a7b8"
+policy = "c9d0e1f2"
+
+[[upstreams]]
+id = "e5f6a7b8"
+name = "upstream"
+url = "http://127.0.0.1:{dead_port}"
+
+[upstreams.auth]
+type = "legacy_inline"
+value = "test-key"
+header_name = "x-api-key"
+
+[[policies]]
+id = "c9d0e1f2"
+name = "default"
+"#
+    );
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+
+    // First request — will fail (upstream unreachable), permit should be released
+    let resp1 = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp1.status(), 502, "first request should fail with 502");
+
+    // Second request — if permit was released, this acquires it
+    // (if not, with max_concurrent=1, it would time out at the semaphore)
+    let resp2 = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    // Should also fail at upstream, but should get a permit and return 502
+    assert_eq!(
+        resp2.status(),
+        502,
+        "permit was released, second request runs"
+    );
+
+    drop(listener);
+}
+
+// --- Permit released after response size failure ---
+
+#[tokio::test]
+async fn permit_released_after_response_size_failure() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw("x".repeat(5000), "text/event-stream"),
+        )
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    // max_concurrent = 1, response limit = 100 bytes
+    let config = config_with_limits(&mock.uri(), 65536, 100, 1, 60000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+
+    // First request gets oversized response → 502, permit dropped/released
+    let resp1 = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp1.status(), 502);
+
+    // Second request — permit should be free
+    let resp2 = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp2.status(),
+        502,
+        "permit should be free for second request"
+    );
+}
+
 // ─── Test 5: unknown-model ─────────────────────────────────────────────
 
 #[tokio::test]

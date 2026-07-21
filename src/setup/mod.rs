@@ -582,6 +582,10 @@ fn configs_equivalent(a: &TocheConfig, b: &TocheConfig) -> bool {
         && a.runtime.port == b.runtime.port
         && a.runtime.listen_address == b.runtime.listen_address
         && a.runtime.request_timeout_ms == b.runtime.request_timeout_ms
+        && a.runtime.max_request_body_bytes == b.runtime.max_request_body_bytes
+        && a.runtime.max_response_body_bytes == b.runtime.max_response_body_bytes
+        && a.runtime.max_concurrent_upstream == b.runtime.max_concurrent_upstream
+        && a.runtime.upstream_permit_timeout_ms == b.runtime.upstream_permit_timeout_ms
         && a.defaults.integration == b.defaults.integration
         && a.storage.ledger_db == b.storage.ledger_db
         && a.storage.cas_dir == b.storage.cas_dir
