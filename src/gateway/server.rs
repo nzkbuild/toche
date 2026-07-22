@@ -3,6 +3,7 @@ use axum::Router;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tracing::info;
 
 use crate::config::loader::{config_dir, load_config, load_default_integration};
@@ -16,7 +17,8 @@ pub struct AppState {
     pub runtime_id: RuntimeId,
     pub config_snapshot_hash: String,
     pub config_port: u16,
-    pub request_timeout_ms: u64,
+    pub max_request_body_bytes: u64,
+    pub max_response_body_bytes: u64,
     pub default_integration: Option<ResolvedIntegration>,
     /// Absolute path to the Toche config directory, captured at build time
     /// so that background tasks don't read a stale TOCHE_CONFIG_DIR env var.
@@ -24,6 +26,12 @@ pub struct AppState {
     /// In-flight request coalescing belongs to this runtime only. Separate
     /// routers must not share active-flight state or coalesced responses.
     pub coalesce_store: Arc<shield::coalesce::CoalesceStore>,
+    /// Shared reqwest client (connection pooling, no per-request rebuild).
+    pub http_client: reqwest::Client,
+    /// Concurrency semaphore limiting simultaneous upstream requests.
+    pub upstream_semaphore: Arc<Semaphore>,
+    /// Max milliseconds to wait for a concurrency permit.
+    pub upstream_permit_timeout_ms: u64,
 }
 
 /// Build the application router with full middleware stack.
@@ -47,17 +55,44 @@ pub fn build_router(config_dir_override: Option<PathBuf>) -> anyhow::Result<Rout
     let config_toml = toml::to_string_pretty(&config).unwrap_or_default();
     let config_snapshot_hash = identity::compute_config_snapshot(&config_toml);
 
+    // Validate runtime config
+    let validation_errors = config.runtime.validate();
+    if !validation_errors.is_empty() {
+        for err in &validation_errors {
+            tracing::error!("Runtime config validation error: {err}");
+        }
+        anyhow::bail!(
+            "Runtime configuration is invalid:\n  - {}",
+            validation_errors.join("\n  - ")
+        );
+    }
+
     let port = config.runtime.port;
     let request_timeout_ms = config.runtime.request_timeout_ms;
+    let max_request_body_bytes = config.runtime.max_request_body_bytes;
+    let max_response_body_bytes = config.runtime.max_response_body_bytes;
+    let upstream_permit_timeout_ms = config.runtime.upstream_permit_timeout_ms;
+
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(request_timeout_ms))
+        .build()
+        .context("Failed to build shared reqwest client")?;
+
+    let upstream_semaphore = Arc::new(Semaphore::new(config.runtime.max_concurrent_upstream));
+
     let default_integration = load_default_integration().ok();
     let state = Arc::new(AppState {
         runtime_id,
         config_snapshot_hash,
         config_port: port,
-        request_timeout_ms,
+        max_request_body_bytes,
+        max_response_body_bytes,
         default_integration,
         config_dir: dir.clone(),
         coalesce_store: Arc::new(shield::coalesce::CoalesceStore::new()),
+        http_client,
+        upstream_semaphore,
+        upstream_permit_timeout_ms,
     });
 
     Ok(Router::new()
