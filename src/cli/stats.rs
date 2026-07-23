@@ -1,5 +1,6 @@
 use anyhow::Context;
 
+use crate::config::loader::load_config;
 use crate::meter::db::LedgerDb;
 use crate::meter::types::{MeasurementConfidence, StatsOutput, StatsOutputV1};
 use crate::profiles::loader::config_dir;
@@ -28,7 +29,8 @@ pub async fn run(
     integration_filter: Option<&str>,
     trust_domain_filter: Option<&str>,
 ) -> anyhow::Result<()> {
-    let db_path = config_dir().join("ledger.db");
+    let config = load_config().context("Failed to load configuration")?;
+    let (db_path, _) = config.storage.resolve_paths(&config_dir());
     let db = LedgerDb::open(&db_path)
         .with_context(|| format!("Failed to open ledger at {}", db_path.display()))?;
 

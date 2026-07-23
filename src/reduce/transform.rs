@@ -38,10 +38,22 @@ pub struct ReductionResult {
 ///
 /// Returns the original body unchanged when reduction is disabled, when the
 /// bypass header is set, or when JSON parsing fails (conservative fallback).
+/// Stores raw originals under the default CAS directory.
+#[allow(dead_code)] // test/public default-path helper
 pub fn reduce_body(
     body: &str,
     config: &ReduceConfig,
     bypass_header: bool,
+) -> anyhow::Result<ReductionResult> {
+    reduce_body_at(body, config, bypass_header, &storage::cas_dir())
+}
+
+/// Same as `reduce_body` but stores originals under an explicit CAS root.
+pub fn reduce_body_at(
+    body: &str,
+    config: &ReduceConfig,
+    bypass_header: bool,
+    cas_root: &std::path::Path,
 ) -> anyhow::Result<ReductionResult> {
     let mut result = ReductionResult {
         modified_body: body.to_string(),
@@ -115,7 +127,7 @@ pub fn reduce_body(
                 if let Some(filter) = find_matching_filter(filter_cmd) {
                     let (reduced_text, _loss) = apply_filter_with_info(filter, &raw_text);
 
-                    let hash = storage::store(raw_text.as_bytes())
+                    let hash = storage::store_at(raw_text.as_bytes(), cas_root)
                         .context("failed to store raw output in CAS")?;
 
                     let tokens_reduced = estimate_tokens(&reduced_text);

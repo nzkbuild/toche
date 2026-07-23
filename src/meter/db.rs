@@ -255,17 +255,7 @@ impl LedgerDb {
                 entry.protocol,
             ],
         )?;
-        self.cleanup_old()?;
         Ok(self.conn.last_insert_rowid())
-    }
-
-    fn cleanup_old(&self) -> Result<()> {
-        let cutoff = Utc::now() - chrono::Duration::days(90);
-        self.conn.execute(
-            "DELETE FROM ledger WHERE timestamp < ?1",
-            rusqlite::params![cutoff.to_rfc3339()],
-        )?;
-        Ok(())
     }
 
     fn project_filter(project_path: Option<&str>) -> (Option<String>, Option<String>) {

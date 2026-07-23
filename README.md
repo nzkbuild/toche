@@ -204,7 +204,29 @@ Missing prices do not become zero. Missing usage does not become fabricated usag
 | `toche cache inspect` | List local safe-cache entries |
 | `toche cache why <fingerprint>` | Explain a cache decision |
 | `toche expand <hash>` | Recover original tool output from a reduction hash |
+| `toche storage [--json]` | Show storage use, limits, reclaimable CAS, and retention state |
+| `toche cleanup --dry-run` | Show manual cleanup effects without modifying data |
+| `toche cleanup --orphans` | Confirm cleanup, ledger retention, and WAL checkpoint |
 | `toche checkpoint save` | Save a local session checkpoint |
+
+### Storage lifecycle
+
+Optional `[storage]` settings preserve current behavior when absent:
+
+```toml
+[storage]
+# Relative paths resolve under ~/.toche; absolute paths are preserved.
+ledger_db = "ledger.db"
+cas_dir = "cas"
+max_cas_bytes = 1073741824
+max_entries = 10000
+min_free_disk_bytes = 536870912
+ledger_retention_days = 90
+```
+
+Quota or reserve refusal skips only optional cache persistence. Provider responses still return. Ledger retention runs only during confirmed `toche cleanup --orphans`. That command also performs `PRAGMA wal_checkpoint(TRUNCATE)`; no background checkpoint or vacuum runs.
+
+Cache expiry and `toche cache clear` remove cache references, not CAS files. Use `toche storage` then `toche cleanup --dry-run` to inspect reclaimable data. Pre-M1B legacy-untracked CAS is reported but protected from automatic deletion.
 
 ### Per-request bypass headers
 

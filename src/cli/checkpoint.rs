@@ -1,9 +1,15 @@
 use anyhow::Context;
 
+use crate::config::loader::load_config;
 use crate::continuity::checkpoint::{CheckpointDb, NewCheckpoint};
 use crate::continuity::observer;
 use crate::profiles::loader::config_dir;
 use crate::safe_cache::workspace;
+
+fn resolve_checkpoint_db_path() -> anyhow::Result<std::path::PathBuf> {
+    let config = load_config().context("Failed to load configuration")?;
+    Ok(config.storage.resolve_paths(&config_dir()).0)
+}
 
 pub async fn run_save(
     task: Option<String>,
@@ -15,7 +21,7 @@ pub async fn run_save(
     model_assisted: bool,
 ) -> anyhow::Result<()> {
     let project_path = crate::meter::recorder::current_project_path();
-    let db_path = config_dir().join("ledger.db");
+    let db_path = resolve_checkpoint_db_path()?;
     let db = CheckpointDb::open(&db_path)
         .with_context(|| format!("Failed to open checkpoint DB at {}", db_path.display()))?;
 
@@ -53,7 +59,7 @@ pub async fn run_save(
 
 pub async fn run_show(id: Option<i64>, json: bool) -> anyhow::Result<()> {
     let project_path = crate::meter::recorder::current_project_path();
-    let db_path = config_dir().join("ledger.db");
+    let db_path = resolve_checkpoint_db_path()?;
     let db = CheckpointDb::open(&db_path)
         .with_context(|| format!("Failed to open checkpoint DB at {}", db_path.display()))?;
 
@@ -214,7 +220,7 @@ pub async fn run_show(id: Option<i64>, json: bool) -> anyhow::Result<()> {
 
 pub async fn run_list(json: bool) -> anyhow::Result<()> {
     let project_path = crate::meter::recorder::current_project_path();
-    let db_path = config_dir().join("ledger.db");
+    let db_path = resolve_checkpoint_db_path()?;
     let db = CheckpointDb::open(&db_path)
         .with_context(|| format!("Failed to open checkpoint DB at {}", db_path.display()))?;
 
@@ -268,7 +274,7 @@ pub async fn run_list(json: bool) -> anyhow::Result<()> {
 }
 
 pub async fn run_delete(id: i64) -> anyhow::Result<()> {
-    let db_path = config_dir().join("ledger.db");
+    let db_path = resolve_checkpoint_db_path()?;
     let db = CheckpointDb::open(&db_path)
         .with_context(|| format!("Failed to open checkpoint DB at {}", db_path.display()))?;
 

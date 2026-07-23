@@ -1,9 +1,13 @@
 use anyhow::Context;
 
+use crate::config::loader::load_config;
+use crate::profiles::loader::config_dir;
 use crate::reduce;
 
 pub async fn run(hash: String, json: bool) -> anyhow::Result<()> {
-    match reduce::storage::retrieve(&hash) {
+    let config = load_config().context("Failed to load configuration")?;
+    let (_, cas_dir) = config.storage.resolve_paths(&config_dir());
+    match reduce::storage::retrieve_at(&hash, &cas_dir) {
         Ok(bytes) => {
             if json {
                 let content = String::from_utf8_lossy(&bytes).to_string();

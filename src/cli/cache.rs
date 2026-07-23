@@ -1,10 +1,16 @@
 use anyhow::Context;
 
+use crate::config::loader::load_config;
 use crate::profiles::loader::config_dir;
 use crate::safe_cache;
 
+fn resolve_cache_paths() -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
+    let config = load_config().context("Failed to load configuration")?;
+    Ok(config.storage.resolve_paths(&config_dir()))
+}
+
 pub async fn run_inspect(json: bool, entries: u32) -> anyhow::Result<()> {
-    let db_path = config_dir().join("ledger.db");
+    let (db_path, _) = resolve_cache_paths()?;
     let db = safe_cache::cache_db::CacheDb::open(&db_path)
         .with_context(|| format!("Failed to open cache DB at {}", db_path.display()))?;
 
@@ -63,7 +69,7 @@ pub async fn run_inspect(json: bool, entries: u32) -> anyhow::Result<()> {
 }
 
 pub async fn run_clear(project_only: bool, all: bool) -> anyhow::Result<()> {
-    let db_path = config_dir().join("ledger.db");
+    let (db_path, _) = resolve_cache_paths()?;
     let db = safe_cache::cache_db::CacheDb::open(&db_path)
         .with_context(|| format!("Failed to open cache DB at {}", db_path.display()))?;
 
@@ -101,7 +107,7 @@ pub async fn run_clear(project_only: bool, all: bool) -> anyhow::Result<()> {
 }
 
 pub async fn run_why(fingerprint: &str) -> anyhow::Result<()> {
-    let db_path = config_dir().join("ledger.db");
+    let (db_path, cas_dir) = resolve_cache_paths()?;
     let db = safe_cache::cache_db::CacheDb::open(&db_path)
         .with_context(|| format!("Failed to open cache DB at {}", db_path.display()))?;
 
@@ -140,7 +146,7 @@ pub async fn run_why(fingerprint: &str) -> anyhow::Result<()> {
             }
 
             // Check CAS blob exists
-            if crate::reduce::storage::retrieve(&entry.response_hash).is_ok() {
+            if crate::reduce::storage::retrieve_at(&entry.response_hash, &cas_dir).is_ok() {
                 println!("  CAS blob:       present");
             } else {
                 println!("  CAS blob:       MISSING (orphaned entry)");
