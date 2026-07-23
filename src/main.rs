@@ -99,6 +99,24 @@ enum Commands {
         #[command(subcommand)]
         action: CacheAction,
     },
+    /// Show storage status and CAS usage
+    Storage {
+        /// Output in machine-readable JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// List orphan candidates (--dry-run) or delete them (--orphans)
+    Cleanup {
+        /// Dry-run: list orphan candidates only, do not delete
+        #[arg(long, group = "action")]
+        dry_run: bool,
+        /// Delete confirmed orphan files
+        #[arg(long, group = "action")]
+        orphans: bool,
+        /// Output in machine-readable JSON format
+        #[arg(long)]
+        json: bool,
+    },
     /// Save, view, and manage session checkpoints
     Checkpoint {
         #[command(subcommand)]
@@ -240,6 +258,18 @@ async fn main() -> anyhow::Result<()> {
             CacheAction::Inspect { json, entries } => cli::cache::run_inspect(json, entries).await,
             CacheAction::Clear { project, all } => cli::cache::run_clear(project, all).await,
             CacheAction::Why { fingerprint } => cli::cache::run_why(&fingerprint).await,
+        },
+        Some(Commands::Storage { json }) => cli::storage::run_storage_status(json).await,
+        Some(Commands::Cleanup {
+            dry_run,
+            orphans,
+            json,
+        }) => match (dry_run, orphans) {
+            (true, false) => cli::storage::run_cleanup_dry_run(json).await,
+            (false, true) => cli::storage::run_cleanup_orphans(json).await,
+            _ => {
+                anyhow::bail!("Exactly one of --dry-run or --orphans is required.");
+            }
         },
         Some(Commands::Checkpoint { action }) => match action {
             CheckpointAction::Save {

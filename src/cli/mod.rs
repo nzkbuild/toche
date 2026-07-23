@@ -9,3 +9,4 @@ pub mod run;
 pub mod setup;
 pub mod stats;
 pub mod status;
+pub mod storage;

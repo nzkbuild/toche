@@ -338,8 +338,8 @@ pub async fn messages(
                     if cfg.enabled {
                         let project = current_project_path();
                         let ws_fp = safe_cache::workspace::compute_workspace_fingerprint();
-                        let db_path = state.config_dir.join("ledger.db");
-                        if let Ok(cache_db) = safe_cache::cache_db::CacheDb::open(&db_path) {
+                        let db_path = &state.storage_ledger_db;
+                        if let Ok(cache_db) = safe_cache::cache_db::CacheDb::open(db_path) {
                             let _ = cache_db.evict_expired(cfg.ttl_days);
                             let _ = cache_db.evict_expired_rejects(cfg.ttl_days);
                             if let Ok(Some(entry)) = cache_db.lookup(&project, &fingerprint) {
@@ -350,7 +350,10 @@ pub async fn messages(
                                         "workspace fingerprint mismatch",
                                     );
                                 } else {
-                                    match reduce::storage::retrieve(&entry.response_hash) {
+                                    match reduce::storage::retrieve_at(
+                                        &entry.response_hash,
+                                        &state.storage_cas_dir,
+                                    ) {
                                         Ok(bytes) => {
                                             let _ = cache_db.touch(&project, &fingerprint);
                                             info!(
@@ -401,19 +404,23 @@ pub async fn messages(
                 let default_reduce = reduce::config::ReduceConfig::default();
                 let reduce_cfg = resolved.reduce.as_ref().unwrap_or(&default_reduce);
 
-                let reduction =
-                    reduce::transform::reduce_body(&body_str, reduce_cfg, bypass_reduce)
-                        .unwrap_or_else(|e| {
-                            error!("Reduce: falling back to original body: {e}");
-                            reduce::transform::ReductionResult {
-                                modified_body: body_str.clone(),
-                                tokens_raw: 0,
-                                tokens_reduced: 0,
-                                reductions: 0,
-                                passthroughs: 0,
-                                hashes: Vec::new(),
-                            }
-                        });
+                let reduction = reduce::transform::reduce_body_at(
+                    &body_str,
+                    reduce_cfg,
+                    bypass_reduce,
+                    &state.storage_cas_dir,
+                )
+                .unwrap_or_else(|e| {
+                    error!("Reduce: falling back to original body: {e}");
+                    reduce::transform::ReductionResult {
+                        modified_body: body_str.clone(),
+                        tokens_raw: 0,
+                        tokens_reduced: 0,
+                        reductions: 0,
+                        passthroughs: 0,
+                        hashes: Vec::new(),
+                    }
+                });
 
                 let reduced_body = reduction.modified_body;
 
@@ -509,6 +516,22 @@ pub async fn messages(
                     body_after_efficiency
                 };
 
+                // Register reduce CAS hashes in the registry before
+                // forwarding upstream so references exist even if the
+                // upstream call fails mid-flight.  Deduplicate so the
+                // same hash appearing multiple times counts once.
+                if !reduction.hashes.is_empty() {
+                    let db_path = &state.storage_ledger_db;
+                    if let Ok(cache_db) = safe_cache::cache_db::CacheDb::open(db_path) {
+                        let mut seen = std::collections::HashSet::new();
+                        for hash in &reduction.hashes {
+                            if seen.insert(hash) {
+                                let _ = cache_db.register_cas(hash);
+                            }
+                        }
+                    }
+                }
+
                 // Acquire a timed permit only while the provider request is active.
                 // Safe-cache hits and coalesced waiters consume zero permits.
                 let _permit = tokio::time::timeout(
@@ -546,32 +569,188 @@ pub async fn messages(
                             let verdict = safe_cache::inspect::inspect_response(&fwd.body_bytes);
                             if verdict.safe && (fwd.body_bytes.len() as u64) <= cfg.max_entry_bytes
                             {
-                                if let Ok(hash) = reduce::storage::store(&fwd.body_bytes) {
+                                // Check storage limits before writing. Run a
+                                // lightweight cleanup pass first so we don't
+                                // refuse if expired data is reclaimable.
+                                let storage_cfg = &state.storage_config;
+                                let limits_configured = storage_cfg.max_entries.is_some()
+                                    || storage_cfg.max_cas_bytes.is_some()
+                                    || storage_cfg.min_free_disk_bytes.is_some();
+
+                                let cache_db_result =
+                                    safe_cache::cache_db::CacheDb::open(&state.storage_ledger_db);
+
+                                let within_limits = match cache_db_result {
+                                    Err(e) if limits_configured => {
+                                        tracing::warn!(
+                                            "Storage limit: cannot open cache DB ({}), skipping cache write",
+                                            e
+                                        );
+                                        false
+                                    }
+                                    Err(_) => true,
+                                    Ok(cache_db) => {
+                                        let _ = cache_db.evict_expired(cfg.ttl_days);
+                                        let _ = cache_db.evict_expired_rejects(cfg.ttl_days);
+
+                                        let mut ok = true;
+
+                                        // max_entries check — allows replacement
+                                        // of an existing (project,fingerprint) row.
+                                        if let Some(max_entries) = storage_cfg.max_entries {
+                                            match cache_db.count(None) {
+                                                Ok(count) => {
+                                                    if count >= max_entries {
+                                                        let existing = cache_db.lookup(
+                                                            &current_project_path(),
+                                                            &fingerprint,
+                                                        );
+                                                        match existing {
+                                                            Ok(Some(_)) => {
+                                                                // replace existing entry
+                                                            }
+                                                            _ => {
+                                                                tracing::warn!(
+                                                                    "Storage limit: max_entries ({}) reached ({}), skipping cache write",
+                                                                    max_entries,
+                                                                    count
+                                                                );
+                                                                ok = false;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Err(_) => {
+                                                    tracing::warn!(
+                                                        "Storage limit: cannot read cache count, skipping cache write"
+                                                    );
+                                                    ok = false;
+                                                }
+                                            }
+                                        }
+
+                                        // max_cas_bytes check — includes incoming response
+                                        if ok {
+                                            if let Some(max_cas_bytes) = storage_cfg.max_cas_bytes {
+                                                let cas_dir = &state.storage_cas_dir;
+                                                match cache_db.storage_stats(cas_dir) {
+                                                    Ok(stats) => {
+                                                        let projected =
+                                                            stats.cas_bytes_on_disk.saturating_add(
+                                                                fwd.body_bytes.len() as u64,
+                                                            );
+                                                        if projected > max_cas_bytes {
+                                                            tracing::warn!(
+                                                                "Storage limit: max_cas_bytes ({}) would be exceeded, skipping cache write",
+                                                                max_cas_bytes
+                                                            );
+                                                            ok = false;
+                                                        }
+                                                    }
+                                                    Err(_) => {
+                                                        tracing::warn!(
+                                                            "Storage limit: cannot read storage stats, skipping cache write"
+                                                        );
+                                                        ok = false;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // min_free_disk_bytes check with incoming response
+                                        if ok {
+                                            if let Some(min_free) = storage_cfg.min_free_disk_bytes
+                                            {
+                                                let cas_dir = &state.storage_cas_dir;
+                                                if safe_cache::cache_db::free_disk_measurable() {
+                                                    match safe_cache::cache_db::free_bytes_under(
+                                                        cas_dir,
+                                                    ) {
+                                                        Some(free)
+                                                            if free.saturating_sub(
+                                                                fwd.body_bytes.len() as u64,
+                                                            ) >= min_free =>
+                                                        {
+                                                            // OK
+                                                        }
+                                                        Some(free) => {
+                                                            tracing::warn!(
+                                                                "Storage limit: min_free_disk_bytes ({}) would not be met ({} free - {} incoming), skipping cache write",
+                                                                min_free,
+                                                                free,
+                                                                fwd.body_bytes.len()
+                                                            );
+                                                            ok = false;
+                                                        }
+                                                        None => {
+                                                            tracing::warn!(
+                                                                "Storage limit: min_free_disk_bytes ({}) configured but free space cannot be measured, skipping cache write",
+                                                                min_free
+                                                            );
+                                                            ok = false;
+                                                        }
+                                                    }
+                                                } else {
+                                                    tracing::warn!(
+                                                        "Storage limit: min_free_disk_bytes ({}) configured but free space measurement not available on this platform, skipping cache write",
+                                                        min_free
+                                                    );
+                                                    ok = false;
+                                                }
+                                            }
+                                        }
+                                        ok
+                                    }
+                                };
+
+                                if within_limits {
+                                    let stored_hash = reduce::storage::store_new_at(
+                                        &fwd.body_bytes,
+                                        &state.storage_cas_dir,
+                                    );
                                     let ws_fp =
                                         safe_cache::workspace::compute_workspace_fingerprint();
-                                    let db_path = state.config_dir.join("ledger.db");
-                                    if let Ok(cache_db) =
-                                        safe_cache::cache_db::CacheDb::open(&db_path)
-                                    {
-                                        let _ =
-                                            cache_db.insert(&safe_cache::cache_db::NewCacheEntry {
-                                                project_path: current_project_path(),
-                                                fingerprint: fingerprint.clone(),
-                                                workspace_fingerprint: ws_fp,
-                                                response_hash: hash,
-                                                model: model.clone(),
-                                                status: fwd.status as i32,
-                                                tokens_input: input_tokens,
-                                                tokens_output: estimate_tokens(
-                                                    &String::from_utf8_lossy(&fwd.body_bytes),
-                                                ),
-                                            });
+                                    let db_path = &state.storage_ledger_db;
+                                    match (
+                                        &stored_hash,
+                                        safe_cache::cache_db::CacheDb::open(db_path),
+                                    ) {
+                                        (Ok((hash, created)), Ok(cache_db)) => {
+                                            if cache_db
+                                                .insert(&safe_cache::cache_db::NewCacheEntry {
+                                                    project_path: current_project_path(),
+                                                    fingerprint: fingerprint.clone(),
+                                                    workspace_fingerprint: ws_fp,
+                                                    response_hash: hash.clone(),
+                                                    model: model.clone(),
+                                                    status: fwd.status as i32,
+                                                    tokens_input: input_tokens,
+                                                    tokens_output: estimate_tokens(
+                                                        &String::from_utf8_lossy(&fwd.body_bytes),
+                                                    ),
+                                                })
+                                                .is_err()
+                                                && *created
+                                            {
+                                                let _ = reduce::storage::delete_at(
+                                                    hash,
+                                                    &state.storage_cas_dir,
+                                                );
+                                            }
+                                        }
+                                        _ => {
+                                            if let Ok((hash, true)) = stored_hash {
+                                                let _ = reduce::storage::delete_at(
+                                                    &hash,
+                                                    &state.storage_cas_dir,
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             } else if !verdict.safe && !verdict.reason.is_empty() {
-                                let db_path = state.config_dir.join("ledger.db");
-                                if let Ok(cache_db) = safe_cache::cache_db::CacheDb::open(&db_path)
-                                {
+                                let db_path = &state.storage_ledger_db;
+                                if let Ok(cache_db) = safe_cache::cache_db::CacheDb::open(db_path) {
                                     let _ = cache_db.insert_reject(
                                         &current_project_path(),
                                         &fingerprint,
@@ -620,10 +799,9 @@ pub async fn messages(
     let _efficiency_tokens_added = forwarded.efficiency_tokens_added;
     let id_ctx_for_ledger = id_ctx.clone();
     let coalesce_store = Arc::clone(&state.coalesce_store);
-    let config_dir = state.config_dir.clone();
+    let storage_ledger_db = state.storage_ledger_db.clone();
     tokio::spawn(async move {
-        let db_path = config_dir.join("ledger.db");
-        let db = match LedgerDb::open(&db_path) {
+        let db = match LedgerDb::open(&storage_ledger_db) {
             Ok(db) => db,
             Err(e) => {
                 error!("Failed to open ledger DB: {e}");
@@ -824,10 +1002,8 @@ pub async fn responses(
     let status_clone = status_str.to_string();
     let project_path = current_project_path();
     let id_ctx_for_ledger = id_ctx.clone();
-    let config_dir = state.config_dir.clone();
-
+    let db_path = state.storage_ledger_db.clone();
     tokio::spawn(async move {
-        let db_path = config_dir.join("ledger.db");
         let db = match LedgerDb::open(&db_path) {
             Ok(db) => db,
             Err(e) => {

@@ -8,6 +8,7 @@ use tracing::info;
 
 use crate::config::loader::{config_dir, load_config, load_default_integration};
 use crate::config::resolver::ResolvedIntegration;
+use crate::config::toche_config::StorageConfig;
 use crate::identity::{self, RuntimeId};
 use crate::shield;
 
@@ -20,9 +21,6 @@ pub struct AppState {
     pub max_request_body_bytes: u64,
     pub max_response_body_bytes: u64,
     pub default_integration: Option<ResolvedIntegration>,
-    /// Absolute path to the Toche config directory, captured at build time
-    /// so that background tasks don't read a stale TOCHE_CONFIG_DIR env var.
-    pub config_dir: std::path::PathBuf,
     /// In-flight request coalescing belongs to this runtime only. Separate
     /// routers must not share active-flight state or coalesced responses.
     pub coalesce_store: Arc<shield::coalesce::CoalesceStore>,
@@ -32,6 +30,12 @@ pub struct AppState {
     pub upstream_semaphore: Arc<Semaphore>,
     /// Max milliseconds to wait for a concurrency permit.
     pub upstream_permit_timeout_ms: u64,
+    /// Storage limits from config (all optional / None = unlimited).
+    pub storage_config: StorageConfig,
+    /// Resolved absolute path to the ledger DB (from storage.ledger_db).
+    pub storage_ledger_db: PathBuf,
+    /// Resolved absolute path to the CAS blob directory (from storage.cas_dir).
+    pub storage_cas_dir: PathBuf,
 }
 
 /// Build the application router with full middleware stack.
@@ -67,6 +71,18 @@ pub fn build_router(config_dir_override: Option<PathBuf>) -> anyhow::Result<Rout
         );
     }
 
+    // Validate storage config
+    let storage_errors = config.storage.validate();
+    if !storage_errors.is_empty() {
+        for err in &storage_errors {
+            tracing::error!("Storage config validation error: {err}");
+        }
+        anyhow::bail!(
+            "Storage configuration is invalid:\n  - {}",
+            storage_errors.join("\n  - ")
+        );
+    }
+
     let port = config.runtime.port;
     let request_timeout_ms = config.runtime.request_timeout_ms;
     let max_request_body_bytes = config.runtime.max_request_body_bytes;
@@ -81,6 +97,8 @@ pub fn build_router(config_dir_override: Option<PathBuf>) -> anyhow::Result<Rout
     let upstream_semaphore = Arc::new(Semaphore::new(config.runtime.max_concurrent_upstream));
 
     let default_integration = load_default_integration().ok();
+    let storage_config = config.storage.clone();
+    let (storage_ledger_db, storage_cas_dir) = storage_config.resolve_paths(&dir);
     let state = Arc::new(AppState {
         runtime_id,
         config_snapshot_hash,
@@ -88,11 +106,13 @@ pub fn build_router(config_dir_override: Option<PathBuf>) -> anyhow::Result<Rout
         max_request_body_bytes,
         max_response_body_bytes,
         default_integration,
-        config_dir: dir.clone(),
         coalesce_store: Arc::new(shield::coalesce::CoalesceStore::new()),
         http_client,
         upstream_semaphore,
         upstream_permit_timeout_ms,
+        storage_config,
+        storage_ledger_db,
+        storage_cas_dir,
     });
 
     Ok(Router::new()
@@ -187,8 +207,7 @@ async fn runtime_status(
     }
 
     // Count by protocol from ledger
-    let db_path = state.config_dir.join("ledger.db");
-    if let Ok(db) = crate::meter::db::LedgerDb::open(&db_path) {
+    if let Ok(db) = crate::meter::db::LedgerDb::open(&state.storage_ledger_db) {
         if let Ok(entries) = db.get_entries(1000, None) {
             for e in &entries {
                 *protocol_counts.entry(e.protocol.clone()).or_insert(0) += 1;

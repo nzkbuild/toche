@@ -146,6 +146,18 @@ pub struct StorageConfig {
     pub ledger_db: String,
     #[serde(default = "default_cas_dir")]
     pub cas_dir: String,
+    /// Optional ceiling on total CAS blob bytes. None = unlimited (default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cas_bytes: Option<u64>,
+    /// Optional ceiling on cache entries. None = unlimited (default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entries: Option<u64>,
+    /// Optional minimum free disk bytes before cache persist. None = disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_free_disk_bytes: Option<u64>,
+    /// Optional ledger row retention in days. None = disabled (keep all).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger_retention_days: Option<u32>,
 }
 
 fn default_ledger_db() -> String {
@@ -160,7 +172,59 @@ impl Default for StorageConfig {
         Self {
             ledger_db: default_ledger_db(),
             cas_dir: default_cas_dir(),
+            max_cas_bytes: None,
+            max_entries: None,
+            min_free_disk_bytes: None,
+            ledger_retention_days: None,
         }
+    }
+}
+
+impl StorageConfig {
+    /// Resolve `ledger_db` and `cas_dir` against the given `base_dir`.
+    /// Relative paths are joined with `base_dir`; absolute paths are preserved.
+    pub fn resolve_paths(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let resolve = |p: &str| -> std::path::PathBuf {
+            let path = std::path::Path::new(p);
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                base_dir.join(path)
+            }
+        };
+        (resolve(&self.ledger_db), resolve(&self.cas_dir))
+    }
+
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors: Vec<String> = Vec::new();
+        if self.max_cas_bytes == Some(0) {
+            errors.push(
+                "storage.max_cas_bytes must be absent (unlimited) or a positive number, not zero"
+                    .into(),
+            );
+        }
+        if self.max_entries == Some(0) {
+            errors.push(
+                "storage.max_entries must be absent (unlimited) or a positive number, not zero"
+                    .into(),
+            );
+        }
+        if self.min_free_disk_bytes == Some(0) {
+            errors.push(
+                "storage.min_free_disk_bytes must be absent (no check) or a positive number, not zero"
+                    .into(),
+            );
+        }
+        if self.ledger_retention_days == Some(0) {
+            errors.push(
+                "storage.ledger_retention_days must be absent (keep all) or a positive number, not zero"
+                    .into(),
+            );
+        }
+        errors
     }
 }
 
@@ -482,6 +546,90 @@ request_timeout_ms = 10000
         let cfg = StorageConfig::default();
         assert_eq!(cfg.ledger_db, "ledger.db");
         assert_eq!(cfg.cas_dir, "cas");
+        assert_eq!(cfg.max_cas_bytes, None);
+        assert_eq!(cfg.max_entries, None);
+        assert_eq!(cfg.min_free_disk_bytes, None);
+        assert_eq!(cfg.ledger_retention_days, None);
+    }
+
+    #[test]
+    fn storage_config_limits_default_none() {
+        let toml_str = r#"[storage]
+ledger_db = "ledger.db"
+cas_dir = "cas"
+"#;
+        let cfg: StorageConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.max_cas_bytes, None);
+        assert_eq!(cfg.max_entries, None);
+        assert_eq!(cfg.min_free_disk_bytes, None);
+        assert_eq!(cfg.ledger_retention_days, None);
+    }
+
+    #[test]
+    fn storage_config_limits_deserialized() {
+        let toml_str = r#"max_cas_bytes = 1073741824
+max_entries = 1000
+min_free_disk_bytes = 524288000
+"#;
+        let cfg: StorageConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.max_cas_bytes, Some(1_073_741_824));
+        assert_eq!(cfg.max_entries, Some(1000));
+        assert_eq!(cfg.min_free_disk_bytes, Some(524_288_000));
+    }
+
+    #[test]
+    fn storage_config_validate_rejects_zero_limits() {
+        let cfg = StorageConfig {
+            max_cas_bytes: Some(0),
+            max_entries: Some(0),
+            min_free_disk_bytes: Some(0),
+            ledger_retention_days: Some(0),
+            ..StorageConfig::default()
+        };
+        let errors = cfg.validate();
+        assert_eq!(errors.len(), 4);
+        assert!(errors.iter().any(|e| e.contains("max_cas_bytes")));
+        assert!(errors.iter().any(|e| e.contains("max_entries")));
+        assert!(errors.iter().any(|e| e.contains("min_free_disk_bytes")));
+        assert!(errors.iter().any(|e| e.contains("ledger_retention_days")));
+    }
+
+    #[test]
+    fn storage_config_valid_passes() {
+        let cfg = StorageConfig::default();
+        assert!(cfg.validate().is_empty());
+
+        let cfg2 = StorageConfig {
+            max_cas_bytes: Some(1_073_741_824),
+            max_entries: Some(1000),
+            min_free_disk_bytes: Some(524_288_000),
+            ledger_retention_days: Some(90),
+            ..StorageConfig::default()
+        };
+        assert!(cfg2.validate().is_empty());
+    }
+
+    #[test]
+    fn storage_paths_resolve_relative_and_preserve_absolute() {
+        let base = std::path::Path::new("/tmp/toche-config");
+        let relative = StorageConfig::default();
+        assert_eq!(
+            relative.resolve_paths(base),
+            (base.join("ledger.db"), base.join("cas"))
+        );
+
+        let absolute = StorageConfig {
+            ledger_db: "/var/lib/toche/ledger.db".into(),
+            cas_dir: "/var/lib/toche/cas".into(),
+            ..StorageConfig::default()
+        };
+        assert_eq!(
+            absolute.resolve_paths(base),
+            (
+                std::path::PathBuf::from("/var/lib/toche/ledger.db"),
+                std::path::PathBuf::from("/var/lib/toche/cas")
+            )
+        );
     }
 
     #[test]
