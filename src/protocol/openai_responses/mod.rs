@@ -13,6 +13,10 @@ use crate::shield;
 pub struct OpenAiResponsesProtocol;
 
 impl Protocol for OpenAiResponsesProtocol {
+    fn name(&self) -> &'static str {
+        "openai-responses"
+    }
+
     fn extract_model(&self, body: &str) -> String {
         serde_json::from_str::<serde_json::Value>(body)
             .ok()
@@ -81,6 +85,13 @@ mod tests {
     fn extract_model_malformed() {
         let proto = OpenAiResponsesProtocol;
         assert_eq!(proto.extract_model("{broken"), "unknown");
+    }
+
+    // --- name ---
+
+    #[test]
+    fn name_is_openai_responses() {
+        assert_eq!(OpenAiResponsesProtocol.name(), "openai-responses");
     }
 
     // --- path ---

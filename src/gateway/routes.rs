@@ -132,40 +132,38 @@ macro_rules! bail_status {
     };
 }
 
-pub async fn messages(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    body: axum::body::Body,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, axum::response::Response> {
-    let timer = RequestTimer::start();
-    let request_id = RequestId::new();
+// ---------------------------------------------------------------------------
+// Shared pass-through pipeline
+// ---------------------------------------------------------------------------
 
-    // Read body with size limit — fails with 413 before String/JSON parsing
-    let body_bytes =
-        bounded_body::read_body_limited(&headers, body, state.max_request_body_bytes).await?;
-    let body_str = String::from_utf8_lossy(&body_bytes).to_string();
+/// Fully-prepared context for forwarding a request upstream after common
+/// resolution and header building.
+struct PreparedRequest {
+    client: reqwest::Client,
+    upstream_url: String,
+    upstream_headers: HeaderMap,
+    resolved: crate::config::resolver::ResolvedIntegration,
+    id_ctx: IdentityContext,
+    model: String,
+    input_tokens: u64,
+}
 
+/// Resolve the default integration and build the common identity context.
+/// Returns 500 if no default integration is configured.
+#[allow(clippy::result_large_err)]
+fn resolve_and_build_context(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    protocol: &dyn Protocol,
+    body_str: &str,
+) -> Result<PreparedRequest, axum::response::Response> {
     let resolved = state
         .default_integration
         .clone()
         .ok_or_else(|| status_response(StatusCode::INTERNAL_SERVER_ERROR))?;
 
-    let protocol = AnthropicProtocol;
-
-    let model = protocol.extract_model(&body_str);
-    let integration_name = resolved.name.clone();
-    let input_tokens = estimate_tokens(&body_str);
-
-    // Model validation: if integration has a whitelist, reject unknown models
-    if !resolved.models.is_empty() && !resolved.models.contains_key(&model) {
-        error!(
-            "Model '{}' not configured for integration '{}'. Allowed: {:?}",
-            model,
-            integration_name,
-            resolved.models.keys().collect::<Vec<_>>()
-        );
-        bail_status!(StatusCode::BAD_REQUEST);
-    }
+    let model = protocol.extract_model(body_str);
+    let input_tokens = estimate_tokens(body_str);
 
     let upstream_url = format!(
         "{}{}",
@@ -173,7 +171,6 @@ pub async fn messages(
         protocol.path()
     );
 
-    // Build identity context
     let workspace_path = current_project_path();
     let workspace_id = if workspace_path.is_empty() {
         None
@@ -189,37 +186,12 @@ pub async fn messages(
         &secret_ref_display,
     );
 
-    let policy_hash = identity::compute_policy_hash(
-        resolved.cache.as_ref().is_some_and(|c| c.enabled),
-        resolved.cache.as_ref().map_or("observe", |c| match c.mode {
-            crate::config::toche_config::CacheMode::Observe => "observe",
-            crate::config::toche_config::CacheMode::Auto => "auto",
-        }),
-        resolved
-            .cache
-            .as_ref()
-            .map_or("standard", |c| match c.breakpoint {
-                crate::config::toche_config::CacheBreakpoint::Standard => "standard",
-                crate::config::toche_config::CacheBreakpoint::SystemOnly => "system_only",
-            }),
-        resolved.reduce.is_some(),
-        resolved
-            .efficiency
-            .as_ref()
-            .map_or("normal", |e| match e.mode {
-                crate::efficiency::config::EfficiencyMode::Normal => "normal",
-                crate::efficiency::config::EfficiencyMode::Concise => "concise",
-                crate::efficiency::config::EfficiencyMode::Careful => "careful",
-            }),
-        resolved.safe_cache.as_ref().is_some_and(|s| s.enabled),
-    );
-
-    let external_request_id = identity::extract_external_request_id(&headers);
-    let conversation_id = identity::extract_conversation_id(&headers);
+    let external_request_id = identity::extract_external_request_id(headers);
+    let conversation_id = identity::extract_conversation_id(headers);
 
     let id_ctx = IdentityContext {
         runtime_id: state.runtime_id.clone(),
-        request_id: request_id.clone(),
+        request_id: RequestId::new(),
         external_request_id,
         integration_id: resolved.id.clone(),
         integration_name: resolved.name.clone(),
@@ -234,16 +206,10 @@ pub async fn messages(
         attribution: identity::Attribution::Unknown,
     };
 
-    info!(
-        "Request {}: integration={}, model={}",
-        request_id, integration_name, model
-    );
-
-    // Use the shared client from AppState
-    let client = &state.http_client;
+    let client = state.http_client.clone();
 
     let mut upstream_headers = HeaderMap::new();
-    for (name, value) in &headers {
+    for (name, value) in headers.iter() {
         let name_str = name.as_str().to_lowercase();
         if matches!(name_str.as_str(), "host" | "content-length") {
             continue;
@@ -260,7 +226,6 @@ pub async fn messages(
         );
     }
 
-    // Add auth header if configured
     if let Some(value) = &resolved.auth.value {
         upstream_headers.insert(
             axum::http::HeaderName::from_bytes(resolved.auth.header_name.as_bytes())
@@ -270,6 +235,167 @@ pub async fn messages(
         );
     }
 
+    Ok(PreparedRequest {
+        client,
+        upstream_url,
+        upstream_headers,
+        resolved,
+        id_ctx,
+        model,
+        input_tokens,
+    })
+}
+
+/// Acquire a timed concurrency permit. Returns 503 on timeout or failure.
+async fn acquire_concurrency_permit(
+    state: &Arc<AppState>,
+) -> Result<tokio::sync::OwnedSemaphorePermit, axum::response::Response> {
+    tokio::time::timeout(
+        std::time::Duration::from_millis(state.upstream_permit_timeout_ms),
+        state.upstream_semaphore.clone().acquire_owned(),
+    )
+    .await
+    .map_err(|_| {
+        error!("Timed out waiting for concurrency permit");
+        status_response(StatusCode::SERVICE_UNAVAILABLE)
+    })?
+    .map_err(|_| status_response(StatusCode::SERVICE_UNAVAILABLE))
+}
+
+/// Record a forwarded response to the ledger (fire-and-forget) and optionally
+/// complete a coalesce entry so waiters receive the result.
+#[allow(clippy::too_many_arguments)]
+fn record_and_complete(
+    state: &Arc<AppState>,
+    fwd_status: u16,
+    fwd_cache_read_tokens: u64,
+    fwd_cache_create_tokens: u64,
+    fwd_coalesced_count: u64,
+    fwd_reduction_input_tokens: u64,
+    fwd_reduction_output_tokens: u64,
+    fwd_reduction_count: u64,
+    fwd_efficiency_mode: String,
+    fwd_local_cache_hit: bool,
+    body_bytes: Vec<u8>,
+    model: String,
+    integration_name: String,
+    input_tokens: u64,
+    latency_ms: u64,
+    id_ctx: IdentityContext,
+    protocol_name: &'static str,
+    shield_key_for_complete: Option<String>,
+) {
+    let model_clone = model;
+    let integration_name_clone = integration_name;
+    let status_str = if (200..300).contains(&fwd_status) {
+        "success"
+    } else {
+        "error"
+    };
+    let project_path = current_project_path();
+    let cache_read = fwd_cache_read_tokens;
+    let cache_create = fwd_cache_create_tokens;
+    let coalesced_count = fwd_coalesced_count;
+    let reduction_input = fwd_reduction_input_tokens;
+    let reduction_output = fwd_reduction_output_tokens;
+    let reduction_count = fwd_reduction_count;
+    let efficiency_mode = fwd_efficiency_mode.clone();
+    let id_ctx_for_ledger = id_ctx.clone();
+    let coalesce_store = Arc::clone(&state.coalesce_store);
+    let storage_ledger_db = state.storage_ledger_db.clone();
+
+    tokio::spawn(async move {
+        let db = match LedgerDb::open(&storage_ledger_db) {
+            Ok(db) => db,
+            Err(e) => {
+                error!("Failed to open ledger DB: {e}");
+                return;
+            }
+        };
+        let pricing = PricingMap::load_embedded();
+        let output_tokens = estimate_tokens(&String::from_utf8_lossy(&body_bytes));
+
+        if let Some(key) = shield_key_for_complete {
+            coalesce_store.complete(
+                &key,
+                shield::coalesce::CapturedResponse {
+                    status: fwd_status,
+                    body_bytes: body_bytes.clone(),
+                },
+            );
+        }
+
+        let record = NewLedgerRecord {
+            timestamp: chrono::Utc::now(),
+            model: model_clone,
+            profile_name: integration_name_clone,
+            input_tokens,
+            output_tokens,
+            cache_read_input_tokens: cache_read,
+            cache_creation_input_tokens: cache_create,
+            coalesced_count,
+            latency_ms,
+            status: status_str.to_string(),
+            cost: None,
+            project_path,
+            reduction_input_tokens: reduction_input,
+            reduction_output_tokens: reduction_output,
+            reduction_count,
+            efficiency_mode,
+            local_cache_hit: fwd_local_cache_hit,
+            runtime_id: id_ctx_for_ledger.runtime_id.as_str().to_string(),
+            request_id: id_ctx_for_ledger.request_id.as_str().to_string(),
+            integration_id: id_ctx_for_ledger.integration_id,
+            upstream_id: id_ctx_for_ledger.upstream_id,
+            trust_domain_id: id_ctx_for_ledger.trust_domain_id.as_str().to_string(),
+            config_snapshot_hash: id_ctx_for_ledger.config_snapshot_hash,
+            attribution: id_ctx_for_ledger.attribution.to_string(),
+            protocol: protocol_name.to_string(),
+        };
+        if let Err(e) = record_request(&db, &pricing, record) {
+            error!("Failed to record to ledger: {e}");
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Route: Anthropic Messages
+// ---------------------------------------------------------------------------
+
+pub async fn messages(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: axum::body::Body,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, axum::response::Response> {
+    let timer = RequestTimer::start();
+
+    // Shared: read body with size limit
+    let body_bytes =
+        bounded_body::read_body_limited(&headers, body, state.max_request_body_bytes).await?;
+    let body_str = String::from_utf8_lossy(&body_bytes).to_string();
+
+    let protocol = AnthropicProtocol;
+
+    // Shared: resolve integration, build headers and identity context
+    let prep = resolve_and_build_context(&state, &headers, &protocol, &body_str)?;
+
+    // Anthropic-specific: model whitelist enforcement
+    if !prep.resolved.models.is_empty() && !prep.resolved.models.contains_key(&prep.model) {
+        error!(
+            "Model '{}' not configured for integration '{}'. Allowed: {:?}",
+            prep.model,
+            prep.resolved.name,
+            prep.resolved.models.keys().collect::<Vec<_>>()
+        );
+        bail_status!(StatusCode::BAD_REQUEST);
+    }
+
+    info!(
+        "Request {}: integration={}, model={}",
+        prep.id_ctx.request_id, prep.resolved.name, prep.model
+    );
+
+    // Anthropic-specific: bypass headers
     let bypass_all = is_bypassed(&headers, "x-toche-bypass");
     let bypass_shield = bypass_all || is_bypassed(&headers, "x-toche-bypass-shield");
     let bypass_safe_cache = bypass_all || is_bypassed(&headers, "x-toche-bypass-safe-cache");
@@ -279,16 +405,45 @@ pub async fn messages(
 
     let is_streaming = protocol.is_streaming(&body_str);
 
+    // Anthropic-specific: fingerprint + coalescing
     let fingerprint = protocol.fingerprint(&body_str);
+    let policy_hash = identity::compute_policy_hash(
+        prep.resolved.cache.as_ref().is_some_and(|c| c.enabled),
+        prep.resolved
+            .cache
+            .as_ref()
+            .map_or("observe", |c| match c.mode {
+                CacheMode::Observe => "observe",
+                CacheMode::Auto => "auto",
+            }),
+        prep.resolved
+            .cache
+            .as_ref()
+            .map_or("standard", |c| match c.breakpoint {
+                crate::config::toche_config::CacheBreakpoint::Standard => "standard",
+                crate::config::toche_config::CacheBreakpoint::SystemOnly => "system_only",
+            }),
+        prep.resolved.reduce.is_some(),
+        prep.resolved
+            .efficiency
+            .as_ref()
+            .map_or("normal", |e| match e.mode {
+                crate::efficiency::config::EfficiencyMode::Normal => "normal",
+                crate::efficiency::config::EfficiencyMode::Concise => "concise",
+                crate::efficiency::config::EfficiencyMode::Careful => "careful",
+            }),
+        prep.resolved.safe_cache.as_ref().is_some_and(|s| s.enabled),
+    );
+
     let shield_result = if bypass_shield || is_streaming {
         shield::coalesce::CoalesceResult::Forward { key: String::new() }
     } else {
         state
             .coalesce_store
             .try_acquire(
-                &upstream_url,
+                &prep.upstream_url,
                 &fingerprint,
-                id_ctx.trust_domain_id.as_str(),
+                prep.id_ctx.trust_domain_id.as_str(),
                 &policy_hash,
             )
             .await
@@ -299,11 +454,10 @@ pub async fn messages(
             info!(
                 "Shield coalesced: fingerprint={}.., integration={}, model={}, domain={}",
                 &fingerprint[..16.min(fingerprint.len())],
-                integration_name,
-                model,
-                id_ctx.trust_domain_id.as_str()
+                prep.resolved.name,
+                prep.model,
+                prep.id_ctx.trust_domain_id.as_str()
             );
-            // Coalesced waiter uses NO semaphore permit
             (
                 ForwardedResponse {
                     status: captured.status,
@@ -326,11 +480,10 @@ pub async fn messages(
             bail_status!(StatusCode::SERVICE_UNAVAILABLE);
         }
         shield::coalesce::CoalesceResult::Forward { key } => {
-            info!("Forwarding to upstream: {upstream_url}");
+            info!("Forwarding to upstream: {}", prep.upstream_url);
 
-            // Step 1.5: Persistent safe cache check (after shield, before reduce).
-            let safe_cache_cfg = resolved.safe_cache.as_ref();
-
+            // Anthropic-specific: safe-cache lookup
+            let safe_cache_cfg = prep.resolved.safe_cache.as_ref();
             let mut cache_hit: Option<ForwardedResponse> = None;
 
             if !bypass_safe_cache {
@@ -360,7 +513,7 @@ pub async fn messages(
                                                 "Safe cache hit: fingerprint={}.., project={}, model={}",
                                                 &fingerprint[..16.min(fingerprint.len())],
                                                 project,
-                                                model
+                                                prep.model
                                             );
                                             cache_hit = Some(ForwardedResponse {
                                                 status: entry.status as u16,
@@ -401,8 +554,9 @@ pub async fn messages(
                 );
                 (cached, None)
             } else {
+                // Anthropic-specific: reduce
                 let default_reduce = reduce::config::ReduceConfig::default();
-                let reduce_cfg = resolved.reduce.as_ref().unwrap_or(&default_reduce);
+                let reduce_cfg = prep.resolved.reduce.as_ref().unwrap_or(&default_reduce);
 
                 let reduction = reduce::transform::reduce_body_at(
                     &body_str,
@@ -424,8 +578,13 @@ pub async fn messages(
 
                 let reduced_body = reduction.modified_body;
 
+                // Anthropic-specific: efficiency
                 let default_efficiency = efficiency::config::EfficiencyConfig::default();
-                let efficiency_cfg = resolved.efficiency.as_ref().unwrap_or(&default_efficiency);
+                let efficiency_cfg = prep
+                    .resolved
+                    .efficiency
+                    .as_ref()
+                    .unwrap_or(&default_efficiency);
 
                 let instruction = if bypass_efficiency {
                     None
@@ -454,11 +613,15 @@ pub async fn messages(
                 if !efficiency_mode_name.is_empty() {
                     info!(
                         "Efficiency: {} mode active, {} tokens injected, integration={}, model={}",
-                        efficiency_mode_name, efficiency_tokens_added, integration_name, model
+                        efficiency_mode_name,
+                        efficiency_tokens_added,
+                        prep.resolved.name,
+                        prep.model
                     );
                 }
 
-                let final_body = if let Some(ref cache_cfg) = resolved.cache {
+                // Anthropic-specific: cache control
+                let final_body = if let Some(ref cache_cfg) = prep.resolved.cache {
                     if cache_cfg.enabled && !bypass_cache {
                         let plan_result = cache::breakpoint::find_breakpoints(
                             &body_after_efficiency,
@@ -484,8 +647,8 @@ pub async fn messages(
                                             },
                                         bp.system_block_index.is_some(),
                                         bp.message_blocks.len(),
-                                        integration_name,
-                                        model
+                                        prep.resolved.name,
+                                        prep.model
                                     );
                                 }
                                 body_after_efficiency
@@ -499,7 +662,7 @@ pub async fn messages(
                                     };
                                 info!(
                                     "Cache auto: {} breakpoints injected, integration={}, model={}",
-                                    count, integration_name, model
+                                    count, prep.resolved.name, prep.model
                                 );
                                 protocol
                                     .inject_cache_control(&body_after_efficiency, &bp)
@@ -516,10 +679,7 @@ pub async fn messages(
                     body_after_efficiency
                 };
 
-                // Register reduce CAS hashes in the registry before
-                // forwarding upstream so references exist even if the
-                // upstream call fails mid-flight.  Deduplicate so the
-                // same hash appearing multiple times counts once.
+                // Anthropic-specific: register reduce CAS hashes
                 if !reduction.hashes.is_empty() {
                     let db_path = &state.storage_ledger_db;
                     if let Ok(cache_db) = safe_cache::cache_db::CacheDb::open(db_path) {
@@ -532,23 +692,14 @@ pub async fn messages(
                     }
                 }
 
-                // Acquire a timed permit only while the provider request is active.
-                // Safe-cache hits and coalesced waiters consume zero permits.
-                let _permit = tokio::time::timeout(
-                    std::time::Duration::from_millis(state.upstream_permit_timeout_ms),
-                    state.upstream_semaphore.acquire(),
-                )
-                .await
-                .map_err(|_| {
-                    error!("Timed out waiting for concurrency permit");
-                    status_response(StatusCode::SERVICE_UNAVAILABLE)
-                })?
-                .map_err(|_| status_response(StatusCode::SERVICE_UNAVAILABLE))?;
+                // Shared: acquire concurrency permit
+                let _permit = acquire_concurrency_permit(&state).await?;
 
+                // Shared: forward to upstream
                 let mut fwd = forward_to_upstream(
-                    client,
-                    &upstream_url,
-                    upstream_headers,
+                    &prep.client,
+                    &prep.upstream_url,
+                    prep.upstream_headers,
                     final_body,
                     &protocol,
                     state.max_response_body_bytes,
@@ -560,18 +711,13 @@ pub async fn messages(
                 fwd.efficiency_tokens_added = efficiency_tokens_added;
                 fwd.efficiency_mode = efficiency_mode_name;
 
-                // On cache miss with safe response, store for future reuse.
-                // Oversized responses (from forward_to_upstream returning error)
-                // never reach this block since they return Err beforehand.
+                // Anthropic-specific: safe-cache persist
                 if !bypass_safe_cache {
                     if let Some(cfg) = safe_cache_cfg {
                         if cfg.enabled && fwd.status >= 200 && fwd.status < 300 {
                             let verdict = safe_cache::inspect::inspect_response(&fwd.body_bytes);
                             if verdict.safe && (fwd.body_bytes.len() as u64) <= cfg.max_entry_bytes
                             {
-                                // Check storage limits before writing. Run a
-                                // lightweight cleanup pass first so we don't
-                                // refuse if expired data is reclaimable.
                                 let storage_cfg = &state.storage_config;
                                 let limits_configured = storage_cfg.max_entries.is_some()
                                     || storage_cfg.max_cas_bytes.is_some()
@@ -595,8 +741,6 @@ pub async fn messages(
 
                                         let mut ok = true;
 
-                                        // max_entries check — allows replacement
-                                        // of an existing (project,fingerprint) row.
                                         if let Some(max_entries) = storage_cfg.max_entries {
                                             match cache_db.count(None) {
                                                 Ok(count) => {
@@ -606,9 +750,7 @@ pub async fn messages(
                                                             &fingerprint,
                                                         );
                                                         match existing {
-                                                            Ok(Some(_)) => {
-                                                                // replace existing entry
-                                                            }
+                                                            Ok(Some(_)) => {}
                                                             _ => {
                                                                 tracing::warn!(
                                                                     "Storage limit: max_entries ({}) reached ({}), skipping cache write",
@@ -629,7 +771,6 @@ pub async fn messages(
                                             }
                                         }
 
-                                        // max_cas_bytes check — includes incoming response
                                         if ok {
                                             if let Some(max_cas_bytes) = storage_cfg.max_cas_bytes {
                                                 let cas_dir = &state.storage_cas_dir;
@@ -657,7 +798,6 @@ pub async fn messages(
                                             }
                                         }
 
-                                        // min_free_disk_bytes check with incoming response
                                         if ok {
                                             if let Some(min_free) = storage_cfg.min_free_disk_bytes
                                             {
@@ -669,10 +809,7 @@ pub async fn messages(
                                                         Some(free)
                                                             if free.saturating_sub(
                                                                 fwd.body_bytes.len() as u64,
-                                                            ) >= min_free =>
-                                                        {
-                                                            // OK
-                                                        }
+                                                            ) >= min_free => {}
                                                         Some(free) => {
                                                             tracing::warn!(
                                                                 "Storage limit: min_free_disk_bytes ({}) would not be met ({} free - {} incoming), skipping cache write",
@@ -722,9 +859,9 @@ pub async fn messages(
                                                     fingerprint: fingerprint.clone(),
                                                     workspace_fingerprint: ws_fp,
                                                     response_hash: hash.clone(),
-                                                    model: model.clone(),
+                                                    model: prep.model.clone(),
                                                     status: fwd.status as i32,
-                                                    tokens_input: input_tokens,
+                                                    tokens_input: prep.input_tokens,
                                                     tokens_output: estimate_tokens(
                                                         &String::from_utf8_lossy(&fwd.body_bytes),
                                                     ),
@@ -767,95 +904,46 @@ pub async fn messages(
         }
     };
 
-    let status_str = if forwarded.status >= 200 && forwarded.status < 300 {
-        "success"
-    } else {
-        "error"
-    };
     let latency_ms = timer.elapsed_ms();
 
-    // Build SSE stream from collected bytes
-    let body_bytes = forwarded.body_bytes;
+    // Shared: wrap as SSE stream
+    let body_bytes_out = forwarded.body_bytes;
     let stream = futures::stream::once({
-        let data = String::from_utf8_lossy(&body_bytes).to_string();
+        let data = String::from_utf8_lossy(&body_bytes_out).to_string();
         async move { Ok(Event::default().data(data)) }
     });
 
-    // Feed response to session observer for fact collection
-    continuity::observer::observe_response(&body_bytes);
+    // Shared: observe response for continuity
+    continuity::observer::observe_response(&body_bytes_out);
 
-    // Record to ledger (fire-and-forget)
-    let model_clone = model;
-    let integration_name_clone = integration_name;
-    let status_clone = status_str.to_string();
-    let project_path = current_project_path();
-    let cache_read = forwarded.cache_read_tokens;
-    let cache_create = forwarded.cache_create_tokens;
-    let coalesced_count = forwarded.coalesced_count;
-    let reduction_input = forwarded.reduction_input_tokens;
-    let reduction_output = forwarded.reduction_output_tokens;
-    let reduction_count = forwarded.reduction_count;
-    let efficiency_mode = forwarded.efficiency_mode;
-    let _efficiency_tokens_added = forwarded.efficiency_tokens_added;
-    let id_ctx_for_ledger = id_ctx.clone();
-    let coalesce_store = Arc::clone(&state.coalesce_store);
-    let storage_ledger_db = state.storage_ledger_db.clone();
-    tokio::spawn(async move {
-        let db = match LedgerDb::open(&storage_ledger_db) {
-            Ok(db) => db,
-            Err(e) => {
-                error!("Failed to open ledger DB: {e}");
-                return;
-            }
-        };
-        let pricing = PricingMap::load_embedded();
-        let output_tokens = estimate_tokens(&String::from_utf8_lossy(&body_bytes));
-
-        // Complete shield entry so any waiters get the result
-        if let Some(key) = shield_key_for_complete {
-            coalesce_store.complete(
-                &key,
-                shield::coalesce::CapturedResponse {
-                    status: forwarded.status,
-                    body_bytes: body_bytes.clone(),
-                },
-            );
-        }
-
-        let record = NewLedgerRecord {
-            timestamp: chrono::Utc::now(),
-            model: model_clone,
-            profile_name: integration_name_clone,
-            input_tokens,
-            output_tokens,
-            cache_read_input_tokens: cache_read,
-            cache_creation_input_tokens: cache_create,
-            coalesced_count,
-            latency_ms,
-            status: status_clone,
-            cost: None,
-            project_path,
-            reduction_input_tokens: reduction_input,
-            reduction_output_tokens: reduction_output,
-            reduction_count,
-            efficiency_mode,
-            local_cache_hit: forwarded.local_cache_hit,
-            runtime_id: id_ctx_for_ledger.runtime_id.as_str().to_string(),
-            request_id: id_ctx_for_ledger.request_id.as_str().to_string(),
-            integration_id: id_ctx_for_ledger.integration_id,
-            upstream_id: id_ctx_for_ledger.upstream_id,
-            trust_domain_id: id_ctx_for_ledger.trust_domain_id.as_str().to_string(),
-            config_snapshot_hash: id_ctx_for_ledger.config_snapshot_hash,
-            attribution: id_ctx_for_ledger.attribution.to_string(),
-            protocol: "anthropic".to_string(),
-        };
-        if let Err(e) = record_request(&db, &pricing, record) {
-            error!("Failed to record to ledger: {e}");
-        }
-    });
+    // Shared: record to ledger + optionally complete coalesce
+    record_and_complete(
+        &state,
+        forwarded.status,
+        forwarded.cache_read_tokens,
+        forwarded.cache_create_tokens,
+        forwarded.coalesced_count,
+        forwarded.reduction_input_tokens,
+        forwarded.reduction_output_tokens,
+        forwarded.reduction_count,
+        forwarded.efficiency_mode,
+        forwarded.local_cache_hit,
+        body_bytes_out,
+        prep.model,
+        prep.resolved.name,
+        prep.input_tokens,
+        latency_ms,
+        prep.id_ctx,
+        protocol.name(),
+        shield_key_for_complete,
+    );
 
     Ok(Sse::new(stream))
 }
+
+// ---------------------------------------------------------------------------
+// Route: OpenAI Responses
+// ---------------------------------------------------------------------------
 
 pub async fn responses(
     State(state): State<Arc<AppState>>,
@@ -863,188 +951,75 @@ pub async fn responses(
     body: axum::body::Body,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, axum::response::Response> {
     let timer = RequestTimer::start();
-    let request_id = RequestId::new();
 
-    // Read body with size limit
+    // Shared: read body with size limit
     let body_bytes =
         bounded_body::read_body_limited(&headers, body, state.max_request_body_bytes).await?;
     let body_str = String::from_utf8_lossy(&body_bytes).to_string();
 
-    let resolved = state
-        .default_integration
-        .clone()
-        .ok_or_else(|| status_response(StatusCode::INTERNAL_SERVER_ERROR))?;
-
     let protocol = OpenAiResponsesProtocol;
 
-    let model = protocol.extract_model(&body_str);
-    let integration_name = resolved.name.clone();
-    let input_tokens = estimate_tokens(&body_str);
-
-    let upstream_url = format!(
-        "{}{}",
-        resolved.upstream_url.trim_end_matches('/'),
-        protocol.path()
-    );
-
-    let workspace_path = current_project_path();
-    let workspace_id = if workspace_path.is_empty() {
-        None
-    } else {
-        Some(identity::workspace_id_from_path(&workspace_path))
-    };
-
-    let secret_ref_display = resolved.auth.secret_ref.to_string();
-    let trust_domain_id = identity::derive_trust_domain_id(
-        &resolved.id,
-        &resolved.name,
-        &resolved.id,
-        &secret_ref_display,
-    );
-
-    let external_request_id = identity::extract_external_request_id(&headers);
-    let conversation_id = identity::extract_conversation_id(&headers);
-
-    let id_ctx = IdentityContext {
-        runtime_id: state.runtime_id.clone(),
-        request_id: request_id.clone(),
-        external_request_id,
-        integration_id: resolved.id.clone(),
-        integration_name: resolved.name.clone(),
-        upstream_id: resolved.id.clone(),
-        upstream_name: resolved.name.clone(),
-        trust_domain_id: trust_domain_id.clone(),
-        instance_id: None,
-        conversation_id,
-        workspace_id,
-        policy_ids: vec![],
-        config_snapshot_hash: state.config_snapshot_hash.clone(),
-        attribution: identity::Attribution::Unknown,
-    };
+    // Shared: resolve integration, build headers and identity context
+    let prep = resolve_and_build_context(&state, &headers, &protocol, &body_str)?;
 
     info!(
         "Request {} (responses): integration={}, model={}",
-        request_id, integration_name, model
+        prep.id_ctx.request_id, prep.resolved.name, prep.model
     );
 
-    let client = &state.http_client;
+    // Responses: no model whitelist enforcement, no bypass headers, no
+    // fingerprint, no coalescing, no safe-cache, no reduce, no efficiency,
+    // no cache control.
 
-    let mut upstream_headers = HeaderMap::new();
-    for (name, value) in &headers {
-        let name_str = name.as_str().to_lowercase();
-        if matches!(name_str.as_str(), "host" | "content-length") {
-            continue;
-        }
-        upstream_headers.insert(name.clone(), value.clone());
-    }
+    // Shared: acquire concurrency permit
+    let _permit = acquire_concurrency_permit(&state).await?;
 
-    for (header_name, header_value) in &resolved.upstream_headers {
-        upstream_headers.insert(
-            axum::http::HeaderName::from_bytes(header_name.as_bytes())
-                .map_err(|_| status_response(StatusCode::INTERNAL_SERVER_ERROR))?,
-            axum::http::HeaderValue::from_str(header_value)
-                .map_err(|_| status_response(StatusCode::INTERNAL_SERVER_ERROR))?,
-        );
-    }
+    info!("Forwarding (responses) to upstream: {}", prep.upstream_url);
 
-    if let Some(value) = &resolved.auth.value {
-        upstream_headers.insert(
-            axum::http::HeaderName::from_bytes(resolved.auth.header_name.as_bytes())
-                .map_err(|_| status_response(StatusCode::INTERNAL_SERVER_ERROR))?,
-            axum::http::HeaderValue::from_str(value)
-                .map_err(|_| status_response(StatusCode::INTERNAL_SERVER_ERROR))?,
-        );
-    }
-
-    let _is_streaming = protocol.is_streaming(&body_str);
-
-    // Acquire a timed concurrency permit
-    let _permit = tokio::time::timeout(
-        std::time::Duration::from_millis(state.upstream_permit_timeout_ms),
-        state.upstream_semaphore.acquire(),
-    )
-    .await
-    .map_err(|_| {
-        error!("Timed out waiting for concurrency permit (responses)");
-        status_response(StatusCode::SERVICE_UNAVAILABLE)
-    })?
-    .map_err(|_| status_response(StatusCode::SERVICE_UNAVAILABLE))?;
-
-    info!("Forwarding (responses) to upstream: {upstream_url}");
-
+    // Shared: forward to upstream
     let fwd = forward_to_upstream(
-        client,
-        &upstream_url,
-        upstream_headers,
+        &prep.client,
+        &prep.upstream_url,
+        prep.upstream_headers,
         body_str,
         &protocol,
         state.max_response_body_bytes,
     )
     .await?;
 
-    let status_str = if fwd.status >= 200 && fwd.status < 300 {
-        "success"
-    } else {
-        "error"
-    };
     let latency_ms = timer.elapsed_ms();
 
-    let body_bytes = fwd.body_bytes;
+    // Shared: wrap as SSE stream
+    let body_bytes_out = fwd.body_bytes;
     let stream = futures::stream::once({
-        let data = String::from_utf8_lossy(&body_bytes).to_string();
+        let data = String::from_utf8_lossy(&body_bytes_out).to_string();
         async move { Ok(Event::default().data(data)) }
     });
 
-    continuity::observer::observe_response(&body_bytes);
+    // Shared: observe response for continuity
+    continuity::observer::observe_response(&body_bytes_out);
 
-    let model_clone = model;
-    let integration_name_clone = integration_name;
-    let status_clone = status_str.to_string();
-    let project_path = current_project_path();
-    let id_ctx_for_ledger = id_ctx.clone();
-    let db_path = state.storage_ledger_db.clone();
-    tokio::spawn(async move {
-        let db = match LedgerDb::open(&db_path) {
-            Ok(db) => db,
-            Err(e) => {
-                error!("Failed to open ledger DB: {e}");
-                return;
-            }
-        };
-        let pricing = PricingMap::load_embedded();
-        let output_tokens = estimate_tokens(&String::from_utf8_lossy(&body_bytes));
-
-        let record = NewLedgerRecord {
-            timestamp: chrono::Utc::now(),
-            model: model_clone,
-            profile_name: integration_name_clone,
-            input_tokens,
-            output_tokens,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-            coalesced_count: 0,
-            latency_ms,
-            status: status_clone,
-            cost: None,
-            project_path,
-            reduction_input_tokens: 0,
-            reduction_output_tokens: 0,
-            reduction_count: 0,
-            efficiency_mode: String::new(),
-            local_cache_hit: false,
-            runtime_id: id_ctx_for_ledger.runtime_id.as_str().to_string(),
-            request_id: id_ctx_for_ledger.request_id.as_str().to_string(),
-            integration_id: id_ctx_for_ledger.integration_id,
-            upstream_id: id_ctx_for_ledger.upstream_id,
-            trust_domain_id: id_ctx_for_ledger.trust_domain_id.as_str().to_string(),
-            config_snapshot_hash: id_ctx_for_ledger.config_snapshot_hash,
-            attribution: id_ctx_for_ledger.attribution.to_string(),
-            protocol: "openai-responses".to_string(),
-        };
-        if let Err(e) = record_request(&db, &pricing, record) {
-            error!("Failed to record to ledger: {e}");
-        }
-    });
+    // Shared: record to ledger (no coalesce completion for Responses)
+    record_and_complete(
+        &state,
+        fwd.status,
+        fwd.cache_read_tokens,
+        fwd.cache_create_tokens,
+        fwd.coalesced_count,
+        fwd.reduction_input_tokens,
+        fwd.reduction_output_tokens,
+        fwd.reduction_count,
+        fwd.efficiency_mode,
+        fwd.local_cache_hit,
+        body_bytes_out,
+        prep.model,
+        prep.resolved.name,
+        prep.input_tokens,
+        latency_ms,
+        prep.id_ctx,
+        protocol.name(),
+        None,
+    );
 
     Ok(Sse::new(stream))
 }

@@ -2315,3 +2315,359 @@ name = "default-{integration_name}"
 "#
     )
 }
+
+// ---------------------------------------------------------------------------
+// M3A: Shared protocol forwarding boundary tests
+// ---------------------------------------------------------------------------
+
+// M3A-1: Responses ledger protocol is "openai-responses"
+
+#[tokio::test]
+async fn responses_ledger_protocol_is_openai_responses() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5\",\"output\":[]}}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5\",\"output\":[]}}\n",
+                "text/event-stream",
+            ),
+        )
+        .mount(&mock)
+        .await;
+
+    let _lock = CONFIG_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_upstream(&mock.uri());
+    let (addr, _handle) = spawn_gateway_under_lock(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/responses"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .body(r#"{"model":"gpt-5","input":"Hello"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    let db = toche::meter::db::LedgerDb::open(&config_dir.join("ledger.db")).unwrap();
+    let entries = db.get_entries(10, None).unwrap();
+    assert!(!entries.is_empty(), "ledger must have at least one entry");
+    assert_eq!(
+        entries[0].protocol, "openai-responses",
+        "responses route must record protocol as 'openai-responses'"
+    );
+}
+
+// M3A-2: Responses does not enter safe-cache
+
+#[tokio::test]
+async fn responses_does_not_enter_safe_cache() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5\",\"output\":[]}}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5\",\"output\":[]}}\n",
+                "text/event-stream",
+            ),
+        )
+        .mount(&mock)
+        .await;
+
+    let _lock = CONFIG_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+
+    let config = format!(
+        r#"
+schema_version = 2
+
+[runtime]
+port = 0
+listen_address = "127.0.0.1"
+request_timeout_ms = 300000
+
+[defaults]
+integration = "a1b2c3d4"
+
+[storage]
+ledger_db = "ledger.db"
+cas_dir = "cas"
+
+[[integrations]]
+id = "a1b2c3d4"
+name = "default"
+upstream = "e5f6a7b8"
+policy = "c9d0e1f2"
+
+[[upstreams]]
+id = "e5f6a7b8"
+name = "upstream"
+url = "{mock_uri}"
+
+[upstreams.auth]
+type = "legacy_inline"
+value = "test-key"
+header_name = "x-api-key"
+
+[[policies]]
+id = "c9d0e1f2"
+name = "default"
+
+[policies.safe_cache]
+enabled = true
+ttl_days = 30
+max_entry_bytes = 1048576
+"#,
+        mock_uri = mock.uri(),
+    );
+    let (addr, _handle) = spawn_gateway_under_lock(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/responses"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .body(r#"{"model":"gpt-5","input":"Hello"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    let cache_db =
+        toche::safe_cache::cache_db::CacheDb::open(&config_dir.join("ledger.db")).unwrap();
+    let stats = cache_db.storage_stats(&config_dir.join("cas")).unwrap();
+    assert_eq!(
+        stats.cache_entries, 0,
+        "responses route must not create safe-cache entries"
+    );
+}
+
+// M3A-3: upstream non-2xx body preserved for Messages
+
+#[tokio::test]
+async fn messages_non_2xx_upstream_body_preserved() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .set_body_raw(
+                    "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Too many requests\"}}\n",
+                    "text/event-stream",
+                ),
+        )
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_upstream(&mock.uri());
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("rate_limit_error"),
+        "body must contain upstream error: {body}"
+    );
+    assert!(
+        body.contains("Too many requests"),
+        "body must contain upstream message: {body}"
+    );
+}
+
+// M3A-4: upstream non-2xx body preserved for Responses
+
+#[tokio::test]
+async fn responses_non_2xx_upstream_body_preserved() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_raw(
+                "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad input\"}}\n",
+                "text/event-stream",
+            ),
+        )
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_upstream(&mock.uri());
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/responses"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .body(r#"{"model":"gpt-5","input":"Hello"}"#)
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("invalid_request_error"),
+        "body must contain upstream error: {body}"
+    );
+    assert!(
+        body.contains("bad input"),
+        "body must contain upstream message: {body}"
+    );
+}
+
+// M3A-5: Response-size enforcement through /v1/responses
+
+#[tokio::test]
+async fn responses_response_body_above_limit_returns_502() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw("x".repeat(5000), "text/event-stream"),
+        )
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_limits(&mock.uri(), 65536, 100, 8, 60000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/responses"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .body(r#"{"model":"gpt-5","input":"Hello"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 502);
+    assert_eq!(
+        resp.text().await.unwrap(),
+        "502 Upstream Response Too Large"
+    );
+}
+
+// M3A-6: Concurrency enforcement through /v1/responses
+
+#[tokio::test]
+async fn responses_concurrency_above_limit_wait_succeeds() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(250))
+                .set_body_raw(
+                    "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5\",\"output\":[]}}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5\",\"output\":[]}}\n",
+                    "text/event-stream",
+                ),
+        )
+        .expect(3)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_limits(&mock.uri(), 65536, 65536, 2, 10000);
+    let (addr, _handle) = spawn_gateway(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let mut handles = Vec::new();
+    for _ in 0..3 {
+        let url = format!("http://{addr}/v1/responses");
+        let client = client.clone();
+        handles.push(tokio::spawn(async move {
+            client
+                .post(&url)
+                .header("content-type", "application/json")
+                .header("x-api-key", "test-key")
+                .body(r#"{"model":"gpt-5","input":"Hello"}"#)
+                .send()
+                .await
+        }));
+    }
+
+    let mut ok = 0;
+    for h in handles {
+        if let Ok(Ok(resp)) = h.await {
+            if resp.status() == 200 {
+                ok += 1;
+            }
+        }
+    }
+    assert_eq!(
+        ok, 3,
+        "all 3 responses requests should succeed with max_concurrent=2"
+    );
+}
+
+// M3A-7: Messages protocol in ledger is exactly "anthropic"
+
+#[tokio::test]
+async fn messages_ledger_protocol_is_anthropic() {
+    let mock = MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n",
+                "text/event-stream",
+            ),
+        )
+        .mount(&mock)
+        .await;
+
+    let _lock = CONFIG_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("toche");
+    let config = config_with_upstream(&mock.uri());
+    let (addr, _handle) = spawn_gateway_under_lock(&config_dir, &config).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{addr}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .header("x-toche-bypass-safe-cache", "true")
+        .header("x-toche-bypass-shield", "true")
+        .body(r#"{"model":"claude-sonnet-5","max_tokens":5,"messages":[{"role":"user","content":"Hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    let db = toche::meter::db::LedgerDb::open(&config_dir.join("ledger.db")).unwrap();
+    let entries = db.get_entries(10, None).unwrap();
+    assert!(!entries.is_empty(), "ledger must have at least one entry");
+    assert_eq!(
+        entries[0].protocol, "anthropic",
+        "messages route must record protocol as 'anthropic'"
+    );
+}

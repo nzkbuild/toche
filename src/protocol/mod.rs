@@ -18,6 +18,10 @@ pub struct ResponseHeaders {
 /// Implementations must be `Send + Sync` so they can be used across
 /// await points in the axum handler.
 pub trait Protocol: Send + Sync {
+    /// A stable short name for the protocol, used for ledger records and
+    /// diagnostics (e.g. "anthropic", "openai-responses").
+    fn name(&self) -> &'static str;
+
     /// Extract the model identifier from the request body.
     fn extract_model(&self, body: &str) -> String;
 
