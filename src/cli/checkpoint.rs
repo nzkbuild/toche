@@ -245,28 +245,26 @@ pub async fn run_list(json: bool) -> anyhow::Result<()> {
             "{}",
             serde_json::to_string_pretty(&output).context("Failed to serialize checkpoint list")?
         );
+    } else if entries.is_empty() {
+        println!("No checkpoints saved yet.");
     } else {
-        if entries.is_empty() {
-            println!("No checkpoints saved yet.");
-        } else {
-            println!("Checkpoints for this project:");
-            for e in &entries {
-                let task_preview = if e.task.len() > 60 {
-                    format!("{}...", &e.task[..57])
-                } else if e.task.is_empty() {
-                    "(no task)".into()
-                } else {
-                    e.task.clone()
-                };
-                let ma = if e.model_assisted { " [model]" } else { "" };
-                println!(
-                    "  #{}  {:20}  {}{}",
-                    e.id,
-                    &e.created_at[..19.min(e.created_at.len())],
-                    task_preview,
-                    ma,
-                );
-            }
+        println!("Checkpoints for this project:");
+        for e in &entries {
+            let task_preview = if e.task.len() > 60 {
+                format!("{}...", &e.task[..57])
+            } else if e.task.is_empty() {
+                "(no task)".into()
+            } else {
+                e.task.clone()
+            };
+            let ma = if e.model_assisted { " [model]" } else { "" };
+            println!(
+                "  #{}  {:20}  {}{}",
+                e.id,
+                &e.created_at[..19.min(e.created_at.len())],
+                task_preview,
+                ma,
+            );
         }
     }
 

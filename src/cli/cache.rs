@@ -40,28 +40,26 @@ pub async fn run_inspect(json: bool, entries: u32) -> anyhow::Result<()> {
         let json_str =
             serde_json::to_string_pretty(&output).context("Failed to serialize cache entries")?;
         println!("{json_str}");
+    } else if list.is_empty() {
+        println!("No cache entries found.");
     } else {
-        if list.is_empty() {
-            println!("No cache entries found.");
-        } else {
-            println!("Safe Cache Entries ({}):", list.len());
+        println!("Safe Cache Entries ({}):", list.len());
+        println!(
+            "{:32}  {:16}  {:25}  {:>6}  {:>6}  {:>4}",
+            "Project", "Fingerprint", "Model", "Tokens", "Hits", "Age"
+        );
+        for e in &list {
+            let short_fp = &e.fingerprint[..16.min(e.fingerprint.len())];
+            let short_project = if e.project_path.len() > 30 {
+                format!("...{}", &e.project_path[e.project_path.len() - 29..])
+            } else {
+                e.project_path.clone()
+            };
+            let age = estimate_age(&e.created_at);
             println!(
-                "{:32}  {:16}  {:25}  {:>6}  {:>6}  {:>4}",
-                "Project", "Fingerprint", "Model", "Tokens", "Hits", "Age"
+                "{:32}  {:16}  {:25}  {:>4}in  {:>4}  {:>4}",
+                short_project, short_fp, e.model, e.tokens_input, e.hit_count, age,
             );
-            for e in &list {
-                let short_fp = &e.fingerprint[..16.min(e.fingerprint.len())];
-                let short_project = if e.project_path.len() > 30 {
-                    format!("...{}", &e.project_path[e.project_path.len() - 29..])
-                } else {
-                    e.project_path.clone()
-                };
-                let age = estimate_age(&e.created_at);
-                println!(
-                    "{:32}  {:16}  {:25}  {:>4}in  {:>4}  {:>4}",
-                    short_project, short_fp, e.model, e.tokens_input, e.hit_count, age,
-                );
-            }
         }
     }
 
