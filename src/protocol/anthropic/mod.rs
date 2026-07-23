@@ -12,6 +12,10 @@ use crate::shield;
 pub struct AnthropicProtocol;
 
 impl Protocol for AnthropicProtocol {
+    fn name(&self) -> &'static str {
+        "anthropic"
+    }
+
     fn extract_model(&self, body: &str) -> String {
         serde_json::from_str::<serde_json::Value>(body)
             .ok()
@@ -108,6 +112,13 @@ mod tests {
         let proto = AnthropicProtocol;
         let body = r#"{"model":"claude-sonnet-5","messages":[{"role":"user","content":"he said: \"which model?\""}]}"#;
         assert_eq!(proto.extract_model(body), "claude-sonnet-5");
+    }
+
+    // --- name ---
+
+    #[test]
+    fn name_is_anthropic() {
+        assert_eq!(AnthropicProtocol.name(), "anthropic");
     }
 
     // --- path ---
