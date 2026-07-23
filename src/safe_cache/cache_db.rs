@@ -526,8 +526,8 @@ impl CacheDb {
             }
         }
 
-        safe_to_delete.sort_by(|a, b| b.bytes.cmp(&a.bytes));
-        legacy_untracked.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        safe_to_delete.sort_by_key(|b| std::cmp::Reverse(b.bytes));
+        legacy_untracked.sort_by_key(|b| std::cmp::Reverse(b.bytes));
         Ok(OrphanCandidates {
             safe_to_delete,
             legacy_untracked,
